@@ -14,7 +14,29 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> {
 }
 
 fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
-    ident().map(Expr::Var)
+    recursive(|expr| {
+        let var = ident().map(Expr::Var);
+
+        let lambda = just('\\')
+            .ignore_then(ident())
+            .then_ignore(just('.').padded())
+            .then(expr.clone())
+            .map(|(param, body)| Expr::abs(param, body));
+
+        let parens = expr
+            .clone()
+            .delimited_by(just('(').padded(), just(')').padded());
+
+        let atom = choice((lambda, parens, var)).padded();
+
+        atom.repeated()
+            .at_least(1)
+            .map(|atoms| {
+                let mut iter = atoms.into_iter();
+                let head = iter.next().unwrap();
+                iter.fold(head, Expr::app)
+            })
+    })
 }
 
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
@@ -48,5 +70,59 @@ mod tests {
     #[test]
     fn parse_underscore_identifier() {
         assert_eq!(parse_expr("_foo").unwrap(), Expr::var("_foo"));
+    }
+
+    #[test]
+    fn parse_lambda_identity() {
+        assert_eq!(
+            parse_expr("\\x. x").unwrap(),
+            Expr::abs("x", Expr::var("x"))
+        );
+    }
+
+    #[test]
+    fn parse_application_left_assoc() {
+        assert_eq!(
+            parse_expr("f x y").unwrap(),
+            Expr::app(
+                Expr::app(Expr::var("f"), Expr::var("x")),
+                Expr::var("y"),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_lambda_body_extends_right() {
+        assert_eq!(
+            parse_expr("\\x. f x").unwrap(),
+            Expr::abs("x", Expr::app(Expr::var("f"), Expr::var("x")))
+        );
+    }
+
+    #[test]
+    fn parse_parenthesized_application() {
+        assert_eq!(
+            parse_expr("(\\x. x) y").unwrap(),
+            Expr::app(
+                Expr::abs("x", Expr::var("x")),
+                Expr::var("y"),
+            )
+        );
+    }
+
+    #[test]
+    fn parse_y_combinator() {
+        let inner = Expr::abs(
+            "x",
+            Expr::app(
+                Expr::var("f"),
+                Expr::app(Expr::var("x"), Expr::var("x")),
+            ),
+        );
+        let expected = Expr::abs("f", Expr::app(inner.clone(), inner));
+        assert_eq!(
+            parse_expr("\\f. (\\x. f (x x)) (\\x. f (x x))").unwrap(),
+            expected
+        );
     }
 }
