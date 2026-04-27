@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use crate::{ast::Expr, error::EvalError};
+use crate::{
+    ast::{Def, Expr, Program},
+    error::EvalError,
+};
 
 fn fresh_name(name: &str, taken: &HashSet<String>) -> String {
     let mut candidate = format!("{name}'");
@@ -68,6 +71,45 @@ pub fn normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
         }
     }
     Err(EvalError::StepLimitExceeded(max_steps))
+}
+
+/// Inline all `def`s into `main`. Each def is also inlined into subsequent
+/// defs, so def order matters (no forward references). The result is a
+/// closed term ready to normalize, or a FreeVariable error if any `Var`
+/// references a name that is neither bound by a lambda nor defined.
+pub fn inline_defs(p: &Program) -> Result<Expr, EvalError> {
+    let main = p
+        .main
+        .clone()
+        .ok_or_else(|| EvalError::FreeVariable("<no main expression>".into()))?;
+
+    // Substitute each def's body for its name, in dependency order.
+    // First, resolve cross-def references: rebuild defs so each body
+    // already has previous defs inlined into it.
+    let mut resolved: Vec<Def> = Vec::with_capacity(p.defs.len());
+    for d in &p.defs {
+        let mut body = d.body.clone();
+        for prior in &resolved {
+            body = subst(&body, &prior.name, &prior.body);
+        }
+        resolved.push(Def {
+            name: d.name.clone(),
+            body,
+        });
+    }
+
+    // Now inline into main.
+    let mut result = main;
+    for d in &resolved {
+        result = subst(&result, &d.name, &d.body);
+    }
+
+    // Verify there are no remaining free variables.
+    let remaining = free_vars(&result);
+    if let Some(name) = remaining.into_iter().next() {
+        return Err(EvalError::FreeVariable(name));
+    }
+    Ok(result)
 }
 
 pub fn free_vars(e: &Expr) -> HashSet<String> {
@@ -217,5 +259,65 @@ mod tests {
             normalize(&e, 10000),
             Err(EvalError::StepLimitExceeded(10000))
         ));
+    }
+
+    use crate::ast::{Def, Program};
+
+    #[test]
+    fn inline_defs_into_main() {
+        // def id = \x. x ; main = id (\z. z)  →  (\x. x) (\z. z)
+        // (Plan spec used `id y`, but `y` would be free in the result; using
+        //  a closed argument keeps the test consistent with the closed-term
+        //  check inside inline_defs.)
+        let p = Program {
+            defs: vec![Def {
+                name: "id".into(),
+                body: Expr::abs("x", Expr::var("x")),
+            }],
+            main: Some(Expr::app(
+                Expr::var("id"),
+                Expr::abs("z", Expr::var("z")),
+            )),
+        };
+        let inlined = inline_defs(&p).unwrap();
+        assert_eq!(
+            inlined,
+            Expr::app(
+                Expr::abs("x", Expr::var("x")),
+                Expr::abs("z", Expr::var("z")),
+            )
+        );
+    }
+
+    #[test]
+    fn inline_chained_defs() {
+        // def a = \x. x ; def b = a ; main = b  →  \x. x
+        let p = Program {
+            defs: vec![
+                Def {
+                    name: "a".into(),
+                    body: Expr::abs("x", Expr::var("x")),
+                },
+                Def {
+                    name: "b".into(),
+                    body: Expr::var("a"),
+                },
+            ],
+            main: Some(Expr::var("b")),
+        };
+        let inlined = inline_defs(&p).unwrap();
+        assert_eq!(inlined, Expr::abs("x", Expr::var("x")));
+    }
+
+    #[test]
+    fn inline_missing_def_yields_free_variable_error() {
+        let p = Program {
+            defs: vec![],
+            main: Some(Expr::var("oops")),
+        };
+        match inline_defs(&p) {
+            Err(EvalError::FreeVariable(name)) => assert_eq!(name, "oops"),
+            other => panic!("expected FreeVariable, got {:?}", other),
+        }
     }
 }

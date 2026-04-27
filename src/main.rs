@@ -1,9 +1,11 @@
 use std::env;
 use std::process;
 
-use lc::eval::normalize;
+use lc::eval::{inline_defs, normalize};
 use lc::parser::parse_program;
 use lc::pretty::print;
+
+const DEFAULT_STEP_LIMIT: usize = 10_000;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -19,21 +21,31 @@ fn main() {
             process::exit(1);
         }
     };
-    match parse_program(&src) {
-        Ok(p) => {
-            for d in &p.defs {
-                println!("def {} = {}", d.name, print(&d.body));
-            }
-            if let Some(m) = &p.main {
-                match normalize(m, 10_000) {
-                    Ok(nf) => println!("main = {}", print(&nf)),
-                    Err(e) => {
-                        eprintln!("error: {}", e);
-                        process::exit(1);
-                    }
-                }
-            }
+    let program = match parse_program(&src) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
         }
+    };
+
+    if program.main.is_none() {
+        // Library file with only defs — print them and exit.
+        for d in &program.defs {
+            println!("def {} = {}", d.name, print(&d.body));
+        }
+        return;
+    }
+
+    let inlined = match inline_defs(&program) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
+    };
+    match normalize(&inlined, DEFAULT_STEP_LIMIT) {
+        Ok(nf) => println!("{}", print(&nf)),
         Err(e) => {
             eprintln!("{}", e);
             process::exit(1);
