@@ -1,0 +1,4 @@
+def true = \a. \b. a
+def false = \a. \b. b
+def and = \a. \b. a b a
+and true true

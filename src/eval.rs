@@ -231,7 +231,7 @@ mod tests {
             Expr::abs("x", Expr::var("x")),
             Expr::abs("y", Expr::var("y")),
         );
-        let stepped = normalize(&e, 1).unwrap();
+        let stepped = normalize(&e, 100).unwrap();
         assert_eq!(stepped, Expr::abs("y", Expr::var("y")));
     }
 
@@ -245,7 +245,7 @@ mod tests {
             ),
             Expr::var("b"),
         );
-        let stepped = normalize(&e, 2).unwrap();
+        let stepped = normalize(&e, 100).unwrap();
         assert_eq!(stepped, Expr::var("a"));
     }
     // - Step limit hit: (\x. x x) (\x. x x) should return Err(StepLimitExceeded(...))

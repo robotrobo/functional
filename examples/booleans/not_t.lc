@@ -1,0 +1,8 @@
+def true = \a. \b. a
+def false = \a. \b. b
+def not = \p. \a. \b. p b a
+not true
+
+
+
+
