@@ -1,6 +1,7 @@
 use std::env;
 use std::process;
 
+use lc::eval::normalize;
 use lc::parser::parse_program;
 use lc::pretty::print;
 
@@ -24,7 +25,13 @@ fn main() {
                 println!("def {} = {}", d.name, print(&d.body));
             }
             if let Some(m) = &p.main {
-                println!("main = {}", print(m));
+                match normalize(m, 10_000) {
+                    Ok(nf) => println!("main = {}", print(&nf)),
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        process::exit(1);
+                    }
+                }
             }
         }
         Err(e) => {
