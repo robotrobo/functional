@@ -38,8 +38,9 @@ fn merge(prelude: Program, user: Program) -> Program {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: lc <file.lc>");
-        process::exit(2);
+        let prelude = load_prelude();
+        lc::repl::run(prelude.defs);
+        return;
     }
     let path = &args[1];
     let src = match std::fs::read_to_string(path) {
