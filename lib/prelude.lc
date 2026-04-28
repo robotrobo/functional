@@ -1,0 +1,52 @@
+
+
+def id = \x. x
+def const = \x. \y. x
+def flip = \f. \x. \y. f y x
+def compose = \f. \g. \x. f (g x)
+
+
+def true = \t. \f. t
+def false = \t. \f. f
+def if = \b. \t. \e. b t e
+def not = \p. p false true
+def and = \p. \q. p q p
+def or = \p. \q. p true q
+
+
+def zero = \f. \x . x
+def succ = \n. \f. \x. f (n f x) 
+def add = \m. \n. \f. \x. m f (n f x)
+def mul = \m. \n. \f. m (n f)
+def pow = \m. \n. n m 
+def isZero = \n. n (\f. false) true
+
+
+def one = succ zero
+def two = succ one
+def three = succ two
+def four = succ three
+def five = succ four
+
+def pair = \a. \b. \s. s a b
+def fst = \p. p true
+def snd = \p. p false
+def shift = \p. pair (snd p) (succ (snd p))
+
+
+def pred = \n. fst (n shift (pair zero zero))
+def sub = \m. \n. n pred m
+
+
+def Y = \f. (\x. f(x x)) (\x. f(x x))
+
+def fact = Y(\rec. \n. if (isZero n) (succ zero) (mul n (rec (pred (n))) ))
+
+def nil  = \c. \n. n
+def cons = \h. \t. \c. \n. c h (t c n)
+def isNil = \l. l (\u. \v. false) true 
+def foldr = \c. \n. \l. l c n
+def map = \f. \l. \c. \n. l (\h. c (f h)) n
+def filter = \p. \l. \c. \n. l (\h. \r. if (p h) ( c h r ) ( r ) ) n
+def append = \xs. \ys. \c. \n.  xs c (ys c n)
+def length = \l. foldr (\h. \r. succ r) zero l
