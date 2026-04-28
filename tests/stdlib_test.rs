@@ -17,21 +17,18 @@ fn run_with_prelude(user_src: &str) -> String {
 
 #[test]
 fn add_one_two_is_three() {
-    let r = run_with_prelude("add one two");
-    // Church 3 in canonical form
-    assert_eq!(r, "\\f. \\x. f (f (f x))");
+    assert_eq!(run_with_prelude("add one two"), "3");
 }
 
 #[test]
 fn fact_three_via_prelude() {
-    let r = run_with_prelude("fact three");
-    // Church 6
-    assert_eq!(r, "\\f. \\x. f (f (f (f (f (f x)))))");
+    assert_eq!(run_with_prelude("fact three"), "6");
 }
 
 #[test]
 fn list_length_three() {
-    let r = run_with_prelude("length (cons one (cons two (cons three nil)))");
-    // length [1,2,3] = three
-    assert_eq!(r, "\\f. \\x. f (f (f x))");
+    assert_eq!(
+        run_with_prelude("length (cons one (cons two (cons three nil)))"),
+        "3",
+    );
 }
