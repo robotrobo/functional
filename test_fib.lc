@@ -1,0 +1,10 @@
+def fib = Y (\f. \n.
+    isZero n
+        (\x. zero)
+        (\x. isZero (pred n)
+            (\y. one)
+            (\y. add (f (pred n)) (f (pred (pred n))))
+        )
+)
+
+fib(succ (succ (succ (succ (succ( succ zero))))))

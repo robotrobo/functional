@@ -5,3 +5,4 @@ pub mod eval;
 pub mod error;
 pub mod repl;
 pub mod debruijn;
+pub mod cbn;
