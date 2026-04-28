@@ -29,6 +29,11 @@ pub enum DBExpr {
     /// equality ignores it.
     Abs(String, Rc<DBExpr>),
     App(Rc<DBExpr>, Rc<DBExpr>),
+    /// Like `App`, but the runtime evaluates the argument eagerly to WHNF
+    /// before binding. Inserted by `mark_strict` at App-spine positions
+    /// where strictness analysis proves the binder will be forced.
+    /// Semantically equivalent to `App`; differs only in evaluation order.
+    StrictApp(Rc<DBExpr>, Rc<DBExpr>),
 }
 
 impl PartialEq for DBExpr {
@@ -37,6 +42,11 @@ impl PartialEq for DBExpr {
             (DBExpr::Var(a), DBExpr::Var(b)) => a == b,
             (DBExpr::Abs(_, a), DBExpr::Abs(_, b)) => a == b,
             (DBExpr::App(f1, x1), DBExpr::App(f2, x2)) => f1 == f2 && x1 == x2,
+            // Strictness is an evaluation hint; ignore it for structural
+            // equality so α-equivalence is unaffected by mark_strict.
+            (DBExpr::StrictApp(f1, x1), DBExpr::StrictApp(f2, x2)) => f1 == f2 && x1 == x2,
+            (DBExpr::App(f1, x1), DBExpr::StrictApp(f2, x2))
+            | (DBExpr::StrictApp(f1, x1), DBExpr::App(f2, x2)) => f1 == f2 && x1 == x2,
             _ => false,
         }
     }
@@ -52,6 +62,9 @@ impl DBExpr {
     }
     pub fn app(f: DBExpr, x: DBExpr) -> Self {
         DBExpr::App(Rc::new(f), Rc::new(x))
+    }
+    pub fn strict_app(f: DBExpr, x: DBExpr) -> Self {
+        DBExpr::StrictApp(Rc::new(f), Rc::new(x))
     }
 }
 
@@ -80,6 +93,9 @@ pub fn shift(d: i64, cutoff: usize, e: &DBExpr) -> DBExpr {
         }
         DBExpr::Abs(name, body) => DBExpr::abs(name.clone(), shift(d, cutoff + 1, body)),
         DBExpr::App(f, x) => DBExpr::app(shift(d, cutoff, f), shift(d, cutoff, x)),
+        DBExpr::StrictApp(f, x) => {
+            DBExpr::strict_app(shift(d, cutoff, f), shift(d, cutoff, x))
+        }
     }
 }
 
@@ -92,7 +108,7 @@ pub fn shift(d: i64, cutoff: usize, e: &DBExpr) -> DBExpr {
 ///   3. shift everything down by 1 — the consumed binder is gone
 pub fn reduce_step(e: &DBExpr) -> Option<DBExpr> {
     match e {
-        DBExpr::App(f, a) => {
+        DBExpr::App(f, a) | DBExpr::StrictApp(f, a) => {
             if let DBExpr::Abs(_, body) = &**f {
                 let lifted_a = shift(1, 0, a);
                 let substituted = subst(0, &lifted_a, body);
@@ -126,6 +142,9 @@ pub fn subst(k: usize, s: &DBExpr, e: &DBExpr) -> DBExpr {
         }
         DBExpr::Abs(name, body) => DBExpr::abs(name.clone(), subst(k + 1, s, body)),
         DBExpr::App(f, x) => DBExpr::app(subst(k, s, f), subst(k, s, x)),
+        DBExpr::StrictApp(f, x) => {
+            DBExpr::strict_app(subst(k, s, f), subst(k, s, x))
+        }
     }
 }
 
@@ -201,7 +220,7 @@ pub fn to_named(e: &DBExpr) -> Expr {
                     work.push(Step::BuildAbs(unique));
                     work.push(Step::Process(body));
                 }
-                DBExpr::App(f, x) => {
+                DBExpr::App(f, x) | DBExpr::StrictApp(f, x) => {
                     work.push(Step::BuildApp);
                     // Order so f's result is below x's on the done stack —
                     // we'll pop x first, then f, then build App(f, x).

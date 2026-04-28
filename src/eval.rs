@@ -69,9 +69,23 @@ pub fn normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
 /// Like `normalize`, but also returns the number of CBN steps consumed.
 /// Used by benchmarks and α-equivalence parity tests.
 pub fn normalize_with_steps(e: &Expr, max_steps: usize) -> Result<(Expr, usize), EvalError> {
+    normalize_with_options(e, max_steps, true)
+}
+
+/// Like `normalize_with_steps`, but lets the caller toggle strictness
+/// analysis. With `strict = false` the pipeline skips `mark_strict`, so
+/// every β-step uses lazy thunks (the pre-M6.3 behavior). Used for
+/// benchmark and parity comparisons.
+pub fn normalize_with_options(
+    e: &Expr,
+    max_steps: usize,
+    strict: bool,
+) -> Result<(Expr, usize), EvalError> {
     use crate::cbn::{self, Budget};
     use crate::debruijn::{to_db, to_named};
+    use crate::strict::mark_strict;
     let db = to_db(e);
+    let db = if strict { mark_strict(&db) } else { db };
     let mut budget = Budget::new(max_steps);
     let result = cbn::nf(&db, &cbn::empty_env(), 0, &mut budget)?;
     Ok((to_named(&result), budget.consumed()))

@@ -7,3 +7,4 @@ pub mod repl;
 pub mod debruijn;
 pub mod cbn;
 pub mod simplify;
+pub mod strict;

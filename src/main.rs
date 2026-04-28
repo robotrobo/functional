@@ -2,7 +2,7 @@ use std::env;
 use std::process;
 
 use lc::ast::Program;
-use lc::eval::{inline_defs, normalize};
+use lc::eval::{inline_defs, normalize_with_options};
 use lc::parser::parse_program;
 use lc::pretty::print;
 use lc::simplify::simplify;
@@ -58,12 +58,13 @@ fn main() {
 fn real_main() {
     let raw: Vec<String> = env::args().collect();
     let mut no_simplify = false;
+    let mut no_strict = false;
     let mut args: Vec<String> = Vec::with_capacity(raw.len());
     for a in raw {
-        if a == "--no-simplify" {
-            no_simplify = true;
-        } else {
-            args.push(a);
+        match a.as_str() {
+            "--no-simplify" => no_simplify = true,
+            "--no-strict" => no_strict = true,
+            _ => args.push(a),
         }
     }
     if args.len() < 2 {
@@ -104,8 +105,8 @@ fn real_main() {
         }
     };
     let prepared = if no_simplify { inlined } else { simplify(&inlined) };
-    match normalize(&prepared, DEFAULT_STEP_LIMIT) {
-        Ok(nf) => println!("{}", print(&nf)),
+    match normalize_with_options(&prepared, DEFAULT_STEP_LIMIT, !no_strict) {
+        Ok((nf, _)) => println!("{}", print(&nf)),
         Err(e) => {
             eprintln!("{}", e);
             process::exit(1);

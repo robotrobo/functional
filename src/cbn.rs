@@ -154,6 +154,11 @@ enum Frame {
     /// Pending application argument. When a closure becomes the focus,
     /// pop this and β-reduce.
     Arg(DBExpr, Env),
+    /// Strict application argument: same as `Arg`, but on β the runtime
+    /// eager-WHNFs the arg before binding, so the env slot starts as
+    /// `Forced` instead of `Pending`. Inserted by `mark_strict` in places
+    /// where strictness analysis proved the binder will be forced anyway.
+    StrictArg(DBExpr, Env),
     /// Memoization marker. When a closure becomes the focus, write it
     /// into the env-node's thunk (so subsequent forces are O(1)).
     Update(Rc<EnvNode>),
@@ -177,6 +182,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 stack.push(Frame::Arg((*x).clone(), env.clone()));
                 focus = (*f).clone();
             }
+            DBExpr::StrictApp(f, x) => {
+                stack.push(Frame::StrictArg((*x).clone(), env.clone()));
+                focus = (*f).clone();
+            }
             DBExpr::Abs(name, body) => {
                 // We have a value (a closure). Dispatch on the stack.
                 let closure = Closure {
@@ -192,6 +201,28 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                             env = extend_pending(&closure.env, arg_term, arg_env);
                             focus = closure.body;
                             break; // back to outer loop
+                        }
+                        Some(Frame::StrictArg(arg_term, arg_env)) => {
+                            // Strict β: eager-WHNF the arg, then bind. If
+                            // the arg evaluates to a closure, push as
+                            // Forced (skips one Pending → Forced transition
+                            // later). If it evaluates to a neutral, fall
+                            // back to a Pending thunk — neutrals can't be
+                            // stored as Forced closures.
+                            budget.tick()?;
+                            let arg_val = whnf(&arg_term, &arg_env, budget)?;
+                            let new_node = match arg_val {
+                                Value::Cls(c) => Rc::new(EnvNode {
+                                    thunk: RefCell::new(Thunk::Forced(c)),
+                                    tail: closure.env.clone(),
+                                }),
+                                Value::Neu { .. } => {
+                                    EnvNode::pending(arg_term, arg_env, closure.env.clone())
+                                }
+                            };
+                            env = Some(new_node);
+                            focus = closure.body;
+                            break;
                         }
                         Some(Frame::Update(node)) => {
                             // Memoize: subsequent forces are O(1).
@@ -228,13 +259,14 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         env = env_p;
                     }
                     Action::Bound(level, name) => {
-                        // Build a neutral. Pop Args off the stack into the
-                        // neutral's arg list. Discard any Update frames —
-                        // we can't memoize a neutral as a closure.
+                        // Build a neutral. Pop Args (and StrictArgs — the
+                        // strictness hint doesn't apply once the head is a
+                        // free variable) off the stack. Discard Update
+                        // frames — we can't memoize a neutral as a closure.
                         let mut args: Vec<(DBExpr, Env)> = Vec::new();
                         while let Some(frame) = stack.pop() {
                             match frame {
-                                Frame::Arg(t, e) => args.push((t, e)),
+                                Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
                                 Frame::Update(_) => {}
                             }
                         }
