@@ -4,3 +4,4 @@ pub mod pretty;
 pub mod eval;
 pub mod error;
 pub mod repl;
+pub mod debruijn;

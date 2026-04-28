@@ -63,11 +63,12 @@ pub fn reduce_step(e: &Expr) -> Option<Expr> {
 }
 
 pub fn normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
-    let mut current = e.clone();
+    use crate::debruijn::{reduce_step as db_step, to_db, to_named};
+    let mut current = to_db(e);
     for _ in 0..max_steps {
-        match reduce_step(&current) {
+        match db_step(&current) {
             Some(next) => current = next,
-            None => return Ok(current),
+            None => return Ok(to_named(&current)),
         }
     }
     Err(EvalError::StepLimitExceeded(max_steps))
@@ -272,18 +273,19 @@ mod tests {
         assert_eq!(stepped, Expr::abs("y", Expr::var("y")));
     }
 
-    // - Multi-step: (\x. \y. x) a b → a (two β-steps)
+    // - Multi-step: (\x. \y. x) (\z. z) (\w. w) → \z. z (two β-steps)
+    // (closed term — normalize requires closed input now that DB is the engine)
     #[test]
     fn normalize_multi_step() {
         let e = Expr::app(
             Expr::app(
                 Expr::abs("x", Expr::abs("y", Expr::var("x"))),
-                Expr::var("a"),
+                Expr::abs("z", Expr::var("z")),
             ),
-            Expr::var("b"),
+            Expr::abs("w", Expr::var("w")),
         );
         let stepped = normalize(&e, 100).unwrap();
-        assert_eq!(stepped, Expr::var("a"));
+        assert!(alpha_eq(&stepped, &Expr::abs("z", Expr::var("z"))));
     }
     // - Step limit hit: (\x. x x) (\x. x x) should return Err(StepLimitExceeded(...))
     #[test]
