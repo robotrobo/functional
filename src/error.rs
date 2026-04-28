@@ -1,9 +1,18 @@
 use thiserror::Error;
 
+/// A parse error. Contains a pre-rendered, human-readable message
+/// (potentially multi-line, with source-context lines and a caret).
+/// Build via `parser::render_errors` from chumsky's raw errors.
 #[derive(Debug, Error)]
-pub enum ParseError {
-    #[error("parse error: {0}")]
-    Generic(String),
+#[error("{message}")]
+pub struct ParseError {
+    pub message: String,
+}
+
+impl ParseError {
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
 }
 
 #[derive(Debug, Error)]

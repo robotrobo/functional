@@ -131,6 +131,77 @@ fn program_parser() -> impl Parser<char, Program, Error = Simple<char>> {
         .map(|(defs, main)| Program { defs, main })
 }
 
+/// Convert a 0-based char-position in `src` to a (line, col) pair, both 1-indexed.
+fn byte_to_line_col(src: &str, byte: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for (i, c) in src.char_indices() {
+        if i >= byte {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Return the 1-indexed `line`'s contents (no trailing newline).
+fn line_at(src: &str, line: usize) -> &str {
+    src.lines().nth(line.saturating_sub(1)).unwrap_or("")
+}
+
+fn fmt_token(opt: Option<&char>) -> String {
+    match opt {
+        Some(c) => format!("'{}'", c),
+        None => "end of input".to_string(),
+    }
+}
+
+/// Render a single chumsky error against the original source. Output shape
+/// is modeled on Rust compiler errors: header, location arrow, source line,
+/// caret.
+fn render_one(err: &Simple<char>, src: &str) -> String {
+    let span = err.span();
+    let (line, col) = byte_to_line_col(src, span.start);
+    let found = fmt_token(err.found());
+
+    let mut expected: Vec<String> = err.expected().map(|o| fmt_token(o.as_ref())).collect();
+    expected.sort();
+    expected.dedup();
+
+    let expected_str = match expected.len() {
+        0 => "something else".to_string(),
+        1 => expected.remove(0),
+        _ => {
+            let last = expected.pop().unwrap();
+            format!("{}, or {}", expected.join(", "), last)
+        }
+    };
+
+    let header = format!("error: expected {}, found {}", expected_str, found);
+    let line_num = line.to_string();
+    let pad = " ".repeat(line_num.len());
+    let location = format!("{}--> {}:{}", " ".repeat(line_num.len() + 1), line, col);
+    let separator = format!(" {} |", pad);
+    let source = format!(" {} | {}", line_num, line_at(src, line));
+    let caret = format!(" {} | {}^", pad, " ".repeat(col.saturating_sub(1)));
+
+    format!("{header}\n{location}\n{separator}\n{source}\n{caret}")
+}
+
+fn render_errors(errs: Vec<Simple<char>>, src: &str) -> ParseError {
+    let message = errs
+        .iter()
+        .map(|e| render_one(e, src))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    ParseError::new(message)
+}
+
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     let cleaned = strip_comments(src);
     let normalized = collapse_newlines_in_parens(&cleaned);
@@ -138,27 +209,15 @@ pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
         .ignore_then(expr_parser())
         .then_ignore(end())
         .parse(normalized.as_str())
-        .map_err(|errs| {
-            ParseError::Generic(
-                errs.into_iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })
+        .map_err(|errs| render_errors(errs, &normalized))
 }
 
 pub fn parse_program(src: &str) -> Result<Program, ParseError> {
     let cleaned = strip_comments(src);
     let normalized = collapse_newlines_in_parens(&cleaned);
-    program_parser().parse(normalized.as_str()).map_err(|errs| {
-        ParseError::Generic(
-            errs.into_iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-    })
+    program_parser()
+        .parse(normalized.as_str())
+        .map_err(|errs| render_errors(errs, &normalized))
 }
 
 #[cfg(test)]
