@@ -37,7 +37,7 @@ fn db_normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
 fn cbn_normalize(e: &Expr) -> Expr {
     let db = debruijn::to_db(e);
     let mut budget = cbn::Budget::new(10_000_000);
-    let result = cbn::nf(&db, &Vec::new(), 0, &mut budget).unwrap();
+    let result = cbn::nf(&db, &cbn::empty_env(), 0, &mut budget).unwrap();
     debruijn::to_named(&result)
 }
 
@@ -76,4 +76,21 @@ fn main() {
     run_case("fact 5", "fact five", 20_000_000);
     run_case("pow 2 4", "pow two four", 1_000_000);
     run_case("add 3 4", "add three four", 1_000);
+
+    // Harder: skip the named/db comparisons (they'd take forever) — just CBN.
+    let prelude = std::fs::read_to_string("lib/prelude.lc").unwrap();
+    for (label, src) in [
+        ("fact 6", "fact (succ five)"),
+        ("fact 7", "fact (succ (succ five))"),
+        ("mul 5 5", "mul five five"),
+        ("pow 3 3", "pow three three"),
+    ] {
+        let combined = format!("{}\n{}", prelude, src);
+        let prog = parse_program(&combined).unwrap();
+        let inlined = inline_defs(&prog).unwrap();
+        let t0 = Instant::now();
+        let _ = cbn_normalize(&inlined);
+        let t = t0.elapsed();
+        println!("{label:<14}  cbn-only: {t:>10.3?}");
+    }
 }

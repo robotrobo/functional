@@ -67,7 +67,7 @@ pub fn normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
     use crate::debruijn::{to_db, to_named};
     let db = to_db(e);
     let mut budget = Budget::new(max_steps);
-    let result = cbn::nf(&db, &Vec::new(), 0, &mut budget)?;
+    let result = cbn::nf(&db, &cbn::empty_env(), 0, &mut budget)?;
     Ok(to_named(&result))
 }
 

@@ -43,12 +43,18 @@ impl Budget {
     }
 }
 
-/// An environment: a stack of shared, mutable thunk cells.
-///
-/// Convention: the *last* element corresponds to De Bruijn index 0
-/// (the innermost binder). To look up index `i`, take
-/// `env[env.len() - 1 - i]`.
-pub type Env = Vec<Rc<RefCell<Thunk>>>;
+/// A persistent stack of shared, mutable thunk cells. Cons-list shape
+/// (`Some(Rc<EnvNode>)` = non-empty, `None` = empty). Clone is O(1)
+/// (just an `Rc` bump); extend is O(1) (cons one node onto the front).
+/// Lookup of index `i` is O(i) — fine because typical λ programs
+/// don't reach deep through the env.
+pub type Env = Option<Rc<EnvNode>>;
+
+#[derive(Debug)]
+pub struct EnvNode {
+    pub head: Rc<RefCell<Thunk>>,
+    pub tail: Env,
+}
 
 #[derive(Debug, Clone)]
 pub enum Thunk {
@@ -86,21 +92,33 @@ impl Thunk {
     }
 }
 
-/// Look up De Bruijn index `i` in `env`. Panics if out of range
-/// (well-formed closed terms shouldn't ever do this).
+/// Look up De Bruijn index `i` in `env`. Walks `i` cons-cells deep.
+/// Panics if out of range (well-formed closed terms shouldn't ever do this).
 pub fn lookup(env: &Env, i: usize) -> Rc<RefCell<Thunk>> {
-    let pos = env
-        .len()
-        .checked_sub(1 + i)
-        .unwrap_or_else(|| panic!("lookup: index {i} out of bounds (env len {})", env.len()));
-    Rc::clone(&env[pos])
+    let mut node = env.as_ref().unwrap_or_else(|| {
+        panic!("lookup: index {i} out of bounds (empty env)")
+    });
+    let mut remaining = i;
+    while remaining > 0 {
+        node = node.tail.as_ref().unwrap_or_else(|| {
+            panic!("lookup: index {i} out of bounds (env too shallow)")
+        });
+        remaining -= 1;
+    }
+    Rc::clone(&node.head)
 }
 
 /// Extend an env with a new thunk (becomes the new index-0 slot).
+/// O(1): just cons a node onto the front.
 pub fn extend(env: &Env, t: Rc<RefCell<Thunk>>) -> Env {
-    let mut out = env.clone();
-    out.push(t);
-    out
+    Some(Rc::new(EnvNode {
+        head: t,
+        tail: env.clone(),
+    }))
+}
+
+pub fn empty_env() -> Env {
+    None
 }
 
 /// A weak-head value: either a closure (lambda + captured env) or a
@@ -146,13 +164,13 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
         match focus {
             DBExpr::App(f, x) => {
                 // Push the arg (in current env) and shift focus to the function.
-                stack.push(Frame::Arg(*x, env.clone()));
-                focus = *f;
+                stack.push(Frame::Arg((*x).clone(), env.clone()));
+                focus = (*f).clone();
             }
             DBExpr::Abs(name, body) => {
                 // We have a value (a closure). Dispatch on the stack.
                 let closure = Closure {
-                    body: *body,
+                    body: (*body).clone(),
                     env: env.clone(),
                     binder_name: name,
                 };
@@ -274,8 +292,8 @@ mod tests {
 
     #[test]
     fn lookup_returns_pushed_thunk_at_index_zero() {
-        let env: Env = Vec::new();
-        let t = Thunk::pending(dvar(0), Vec::new());
+        let env: Env = empty_env();
+        let t = Thunk::pending(dvar(0), empty_env());
         let env = extend(&env, t.clone());
         // Index 0 should be the thunk we just pushed.
         assert!(Rc::ptr_eq(&lookup(&env, 0), &t));
@@ -283,9 +301,9 @@ mod tests {
 
     #[test]
     fn lookup_resolves_outer_via_higher_index() {
-        let env: Env = Vec::new();
-        let outer = Thunk::pending(dvar(7), Vec::new());
-        let inner = Thunk::pending(dvar(8), Vec::new());
+        let env: Env = empty_env();
+        let outer = Thunk::pending(dvar(7), empty_env());
+        let inner = Thunk::pending(dvar(8), empty_env());
         let env = extend(&env, outer.clone());
         let env = extend(&env, inner.clone());
         assert!(Rc::ptr_eq(&lookup(&env, 0), &inner));
@@ -315,10 +333,10 @@ mod tests {
     #[test]
     fn whnf_of_lambda_is_self() {
         let term = dabs("x", dvar(0));
-        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
+        let c = assert_closure(whnf(&term, &empty_env(), &mut budget()).unwrap());
         assert_eq!(c.body, dvar(0));
         assert_eq!(c.binder_name, "x");
-        assert!(c.env.is_empty());
+        assert!(c.env.is_none());
     }
 
     #[test]
@@ -326,7 +344,7 @@ mod tests {
         let id = dabs("x", dvar(0));
         let id2 = dabs("y", dvar(0));
         let term = dapp(id, id2);
-        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
+        let c = assert_closure(whnf(&term, &empty_env(), &mut budget()).unwrap());
         assert_eq!(c.body, dvar(0));
         assert_eq!(c.binder_name, "y");
     }
@@ -337,7 +355,7 @@ mod tests {
         let arg1 = dabs("a", dvar(0));
         let arg2 = dabs("b", dvar(0));
         let term = dapp(dapp(const_fn, arg1), arg2);
-        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
+        let c = assert_closure(whnf(&term, &empty_env(), &mut budget()).unwrap());
         assert_eq!(c.binder_name, "a");
         assert_eq!(c.body, dvar(0));
     }
@@ -349,7 +367,7 @@ mod tests {
         let arg = dapp(id_y, id_z);
         let id_x = dabs("x", dvar(0));
         let term = dapp(id_x, arg);
-        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
+        let c = assert_closure(whnf(&term, &empty_env(), &mut budget()).unwrap());
         assert_eq!(c.binder_name, "z");
         assert_eq!(c.body, dvar(0));
     }
@@ -361,7 +379,7 @@ mod tests {
         let term = dapp(omega_lambda.clone(), omega_lambda);
         let mut b = Budget::new(100);
         assert!(matches!(
-            whnf(&term, &Vec::new(), &mut b),
+            whnf(&term, &empty_env(), &mut b),
             Err(EvalError::StepLimitExceeded(100)),
         ));
     }
@@ -374,7 +392,7 @@ mod tests {
         let id = dabs("x", dvar(0));
         let id2 = dabs("y", dvar(0));
         let term = dapp(id, id2);
-        let result = nf(&term, &Vec::new(), 0, &mut budget()).unwrap();
+        let result = nf(&term, &empty_env(), 0, &mut budget()).unwrap();
         assert_eq!(result, dabs("y", dvar(0)));
     }
 
@@ -383,7 +401,7 @@ mod tests {
         // \f. (\y. y) f  →  \f. f
         let inner = dapp(dabs("y", dvar(0)), dvar(0));
         let term = dabs("f", inner);
-        let result = nf(&term, &Vec::new(), 0, &mut budget()).unwrap();
+        let result = nf(&term, &empty_env(), 0, &mut budget()).unwrap();
         assert_eq!(result, dabs("f", dvar(0)));
     }
 
@@ -393,7 +411,7 @@ mod tests {
             "f",
             dabs("x", dapp(dvar(1), dapp(dvar(1), dvar(0)))),
         );
-        let result = nf(&two, &Vec::new(), 0, &mut budget()).unwrap();
+        let result = nf(&two, &empty_env(), 0, &mut budget()).unwrap();
         assert_eq!(result, two);
     }
 
@@ -401,12 +419,12 @@ mod tests {
     fn forced_thunk_can_be_replaced() {
         // Smoke-test the mutability story: take a Pending cell, replace
         // its contents with Forced — all references see the change.
-        let cell = Thunk::pending(dvar(0), Vec::new());
+        let cell = Thunk::pending(dvar(0), empty_env());
         let observer = Rc::clone(&cell);
 
         let dummy_closure = Closure {
             body: dvar(0),
-            env: Vec::new(),
+            env: empty_env(),
             binder_name: "x".into(),
         };
         *cell.borrow_mut() = Thunk::Forced(dummy_closure);

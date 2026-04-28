@@ -11,8 +11,14 @@
 //! Round-trip is name-preserving for un-reduced binders; β-reduction
 //! consumes the redex's binder name, but inner binders keep their hints.
 
+use std::rc::Rc;
+
 use crate::ast::Expr;
 
+/// Children are stored in `Rc` so cloning a `DBExpr` is O(1) (modulo
+/// the binder-name `String` clone in Abs). Hot paths in `cbn` depend on
+/// cheap clones — see force/whnf, which clone the pending term every
+/// time it's forced.
 #[derive(Debug, Clone)]
 pub enum DBExpr {
     /// De Bruijn index: number of lambdas to walk *outward* before hitting
@@ -21,8 +27,8 @@ pub enum DBExpr {
     Var(usize),
     /// Binder. The `String` is a name hint for pretty-printing only —
     /// equality ignores it.
-    Abs(String, Box<DBExpr>),
-    App(Box<DBExpr>, Box<DBExpr>),
+    Abs(String, Rc<DBExpr>),
+    App(Rc<DBExpr>, Rc<DBExpr>),
 }
 
 impl PartialEq for DBExpr {
@@ -42,10 +48,10 @@ impl DBExpr {
         DBExpr::Var(i)
     }
     pub fn abs(name: impl Into<String>, body: DBExpr) -> Self {
-        DBExpr::Abs(name.into(), Box::new(body))
+        DBExpr::Abs(name.into(), Rc::new(body))
     }
     pub fn app(f: DBExpr, x: DBExpr) -> Self {
-        DBExpr::App(Box::new(f), Box::new(x))
+        DBExpr::App(Rc::new(f), Rc::new(x))
     }
 }
 
