@@ -2,6 +2,8 @@
 name = "lc"
 version = "0.1.0"
 edition = "2021"
+description = "A minimal pure-untyped-λ interpreter for learning"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 chumsky = "0.9"
