@@ -112,6 +112,43 @@ pub fn inline_defs(p: &Program) -> Result<Expr, EvalError> {
     Ok(result)
 }
 
+/// Check if two expressions are α-equivalent — i.e., equal up to consistent
+/// renaming of bound variables. Free variables must match by name.
+///
+/// Walk both trees in lockstep, threading two stacks of binder names. At each
+/// `Var`, an "innermost lookup" tells you the binding depth (or free) on each
+/// side. The two are α-equivalent iff at every Var the bindings line up at
+/// the same depth (or both are free with the same name).
+pub fn alpha_eq(a: &Expr, b: &Expr) -> bool {
+    alpha_eq_with(a, b, &mut Vec::new(), &mut Vec::new())
+}
+
+fn alpha_eq_with(a: &Expr, b: &Expr, env_a: &mut Vec<String>, env_b: &mut Vec<String>) -> bool {
+    match (a, b) {
+        (Expr::Var(x), Expr::Var(y)) => {
+            let ix_a = env_a.iter().rposition(|n| n == x);
+            let ix_b = env_b.iter().rposition(|n| n == y);
+            match (ix_a, ix_b) {
+                (Some(ia), Some(ib)) => ia == ib,
+                (None, None) => x == y,
+                _ => false,
+            }
+        }
+        (Expr::Abs(p_a, body_a), Expr::Abs(p_b, body_b)) => {
+            env_a.push(p_a.clone());
+            env_b.push(p_b.clone());
+            let result = alpha_eq_with(body_a, body_b, env_a, env_b);
+            env_a.pop();
+            env_b.pop();
+            result
+        }
+        (Expr::App(f_a, x_a), Expr::App(f_b, x_b)) => {
+            alpha_eq_with(f_a, f_b, env_a, env_b) && alpha_eq_with(x_a, x_b, env_a, env_b)
+        }
+        _ => false,
+    }
+}
+
 pub fn free_vars(e: &Expr) -> HashSet<String> {
     match e {
         Expr::Var(name) => HashSet::from([name.clone()]),
@@ -274,10 +311,7 @@ mod tests {
                 name: "id".into(),
                 body: Expr::abs("x", Expr::var("x")),
             }],
-            main: Some(Expr::app(
-                Expr::var("id"),
-                Expr::abs("z", Expr::var("z")),
-            )),
+            main: Some(Expr::app(Expr::var("id"), Expr::abs("z", Expr::var("z")))),
         };
         let inlined = inline_defs(&p).unwrap();
         assert_eq!(
@@ -319,5 +353,96 @@ mod tests {
             Err(EvalError::FreeVariable(name)) => assert_eq!(name, "oops"),
             other => panic!("expected FreeVariable, got {:?}", other),
         }
+    }
+
+    // ---- alpha_eq ----
+
+    #[test]
+    fn alpha_eq_identity_with_renamed_binder() {
+        // \x. x  ≡α  \y. y
+        assert!(alpha_eq(
+            &Expr::abs("x", Expr::var("x")),
+            &Expr::abs("y", Expr::var("y")),
+        ));
+    }
+
+    #[test]
+    fn alpha_eq_distinct_free_vars_not_equivalent() {
+        assert!(!alpha_eq(&Expr::var("x"), &Expr::var("y")));
+    }
+
+    #[test]
+    fn alpha_eq_same_free_var_is_equivalent() {
+        assert!(alpha_eq(&Expr::var("x"), &Expr::var("x")));
+    }
+
+    #[test]
+    fn alpha_eq_respects_shadowing() {
+        // \x. \x. x  ≡α  \a. \b. b   (innermost binding wins on both sides)
+        let a = Expr::abs("x", Expr::abs("x", Expr::var("x")));
+        let b = Expr::abs("a", Expr::abs("b", Expr::var("b")));
+        assert!(alpha_eq(&a, &b));
+    }
+
+    #[test]
+    fn alpha_eq_outer_vs_inner_binding_differs() {
+        // \x. \y. x  refers to OUTER; \x. \y. y refers to INNER.
+        let a = Expr::abs("x", Expr::abs("y", Expr::var("x")));
+        let b = Expr::abs("x", Expr::abs("y", Expr::var("y")));
+        assert!(!alpha_eq(&a, &b));
+    }
+
+    #[test]
+    fn alpha_eq_application_with_renamed_binders() {
+        // (\x. x) (\y. y)  ≡α  (\a. a) (\b. b)
+        let a = Expr::app(
+            Expr::abs("x", Expr::var("x")),
+            Expr::abs("y", Expr::var("y")),
+        );
+        let b = Expr::app(
+            Expr::abs("a", Expr::var("a")),
+            Expr::abs("b", Expr::var("b")),
+        );
+        assert!(alpha_eq(&a, &b));
+    }
+
+    #[test]
+    fn alpha_eq_different_shapes_not_equivalent() {
+        // Var vs Abs
+        assert!(!alpha_eq(&Expr::var("x"), &Expr::abs("x", Expr::var("x")),));
+        // Abs vs App
+        assert!(!alpha_eq(
+            &Expr::abs("x", Expr::var("x")),
+            &Expr::app(Expr::var("x"), Expr::var("x")),
+        ));
+    }
+
+    #[test]
+    fn alpha_eq_church_two_renamed_binders() {
+        // \f. \x. f (f x)  ≡α  \g. \y. g (g y)
+        let two_fx = Expr::abs(
+            "f",
+            Expr::abs(
+                "x",
+                Expr::app(Expr::var("f"), Expr::app(Expr::var("f"), Expr::var("x"))),
+            ),
+        );
+        let two_gy = Expr::abs(
+            "g",
+            Expr::abs(
+                "y",
+                Expr::app(Expr::var("g"), Expr::app(Expr::var("g"), Expr::var("y"))),
+            ),
+        );
+        assert!(alpha_eq(&two_fx, &two_gy));
+    }
+
+    #[test]
+    fn alpha_eq_free_inner_var_must_match() {
+        // \x. y vs \x. z — both have a free variable in body, but different ones
+        assert!(!alpha_eq(
+            &Expr::abs("x", Expr::var("y")),
+            &Expr::abs("x", Expr::var("z")),
+        ));
     }
 }

@@ -9,7 +9,7 @@
 //! equality check here will fail.
 
 use lc::ast::Expr;
-use lc::eval::{inline_defs, normalize};
+use lc::eval::{alpha_eq, inline_defs, normalize};
 use lc::parser::parse_program;
 
 const STEP_LIMIT: usize = 1_000_000;
@@ -161,9 +161,9 @@ fn mul_two_three_is_six() {
 }
 
 #[test]
-#[ignore = "result is church 8 but with α-renamed binders (\\x. \\x'. ...) — structurally not equal to canonical (\\f. \\x. ...)"]
 fn pow_two_three_is_eight() {
-    assert_eq!(evaluate("pow two three"), church_numeral(8));
+    // Result has α-renamed binders (\x. \x'. ...) but is α-equivalent to canonical Church 8.
+    assert!(alpha_eq(&evaluate("pow two three"), &church_numeral(8)));
 }
 
 #[test]
