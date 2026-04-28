@@ -14,3 +14,18 @@ anyhow = "1"
 [lib]
 name = "lc"
 path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = false
+debug = "line-tables-only"
+
+# Profile-instrumented release build (cargo build --profile profiling).
+# Same as release but keeps full symbols for samply / flamegraph.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false

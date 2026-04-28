@@ -27,6 +27,11 @@ def two = succ one
 def three = succ two
 def four = succ three
 def five = succ four
+def six = succ five
+def seven = succ six
+def eight = succ seven
+def nine = succ eight
+
 
 def pair = \a. \b. \s. s a b
 def fst = \p. p true

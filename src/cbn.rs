@@ -43,16 +43,16 @@ impl Budget {
     }
 }
 
-/// A persistent stack of shared, mutable thunk cells. Cons-list shape
-/// (`Some(Rc<EnvNode>)` = non-empty, `None` = empty). Clone is O(1)
-/// (just an `Rc` bump); extend is O(1) (cons one node onto the front).
-/// Lookup of index `i` is O(i) — fine because typical λ programs
-/// don't reach deep through the env.
+/// A persistent stack of env nodes. Cons-list shape; clone and extend
+/// are O(1). Each node holds its thunk *inline* in a `RefCell`, so
+/// extending the env requires only one heap allocation (the `Rc<EnvNode>`)
+/// rather than two (an outer `Rc<EnvNode>` plus an inner
+/// `Rc<RefCell<Thunk>>`).
 pub type Env = Option<Rc<EnvNode>>;
 
 #[derive(Debug)]
 pub struct EnvNode {
-    pub head: Rc<RefCell<Thunk>>,
+    pub thunk: RefCell<Thunk>,
     pub tail: Env,
 }
 
@@ -80,21 +80,27 @@ pub struct Closure {
     pub binder_name: String,
 }
 
-impl Thunk {
-    pub fn pending(term: DBExpr, env: Env) -> Rc<RefCell<Thunk>> {
-        Rc::new(RefCell::new(Thunk::Pending { term, env }))
+impl EnvNode {
+    pub fn pending(term: DBExpr, env: Env, tail: Env) -> Rc<EnvNode> {
+        Rc::new(EnvNode {
+            thunk: RefCell::new(Thunk::Pending { term, env }),
+            tail,
+        })
     }
-    pub fn forced(c: Closure) -> Rc<RefCell<Thunk>> {
-        Rc::new(RefCell::new(Thunk::Forced(c)))
-    }
-    pub fn bound(level: usize, name: impl Into<String>) -> Rc<RefCell<Thunk>> {
-        Rc::new(RefCell::new(Thunk::Bound { level, name: name.into() }))
+    pub fn bound(level: usize, name: impl Into<String>, tail: Env) -> Rc<EnvNode> {
+        Rc::new(EnvNode {
+            thunk: RefCell::new(Thunk::Bound {
+                level,
+                name: name.into(),
+            }),
+            tail,
+        })
     }
 }
 
 /// Look up De Bruijn index `i` in `env`. Walks `i` cons-cells deep.
 /// Panics if out of range (well-formed closed terms shouldn't ever do this).
-pub fn lookup(env: &Env, i: usize) -> Rc<RefCell<Thunk>> {
+pub fn lookup(env: &Env, i: usize) -> Rc<EnvNode> {
     let mut node = env.as_ref().unwrap_or_else(|| {
         panic!("lookup: index {i} out of bounds (empty env)")
     });
@@ -105,16 +111,17 @@ pub fn lookup(env: &Env, i: usize) -> Rc<RefCell<Thunk>> {
         });
         remaining -= 1;
     }
-    Rc::clone(&node.head)
+    Rc::clone(node)
 }
 
-/// Extend an env with a new thunk (becomes the new index-0 slot).
-/// O(1): just cons a node onto the front.
-pub fn extend(env: &Env, t: Rc<RefCell<Thunk>>) -> Env {
-    Some(Rc::new(EnvNode {
-        head: t,
-        tail: env.clone(),
-    }))
+/// Extend an env with a pending thunk (becomes the new index-0 slot).
+pub fn extend_pending(env: &Env, term: DBExpr, thunk_env: Env) -> Env {
+    Some(EnvNode::pending(term, thunk_env, env.clone()))
+}
+
+/// Extend an env with a Bound placeholder (used during full-NF descent).
+pub fn extend_bound(env: &Env, level: usize, name: impl Into<String>) -> Env {
+    Some(EnvNode::bound(level, name, env.clone()))
 }
 
 pub fn empty_env() -> Env {
@@ -145,8 +152,8 @@ enum Frame {
     /// pop this and β-reduce.
     Arg(DBExpr, Env),
     /// Memoization marker. When a closure becomes the focus, write it
-    /// back into this cell (so subsequent forces are O(1)).
-    Update(Rc<RefCell<Thunk>>),
+    /// into the env-node's thunk (so subsequent forces are O(1)).
+    Update(Rc<EnvNode>),
 }
 
 /// Reduce `term @ env` to weak-head form using an iterative Krivine-style
@@ -179,17 +186,13 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         Some(Frame::Arg(arg_term, arg_env)) => {
                             // β-reduce: bind arg as a thunk in closure's env.
                             budget.tick()?;
-                            let arg_thunk = Thunk::pending(arg_term, arg_env);
-                            env = extend(&closure.env, arg_thunk);
+                            env = extend_pending(&closure.env, arg_term, arg_env);
                             focus = closure.body;
                             break; // back to outer loop
                         }
-                        Some(Frame::Update(cell)) => {
-                            // Memoize: subsequent forces of `cell` are O(1).
-                            *cell.borrow_mut() = Thunk::Forced(closure.clone());
-                            // Continue popping — the same closure is the
-                            // result for any further Update frames or for
-                            // an underlying Arg / empty stack.
+                        Some(Frame::Update(node)) => {
+                            // Memoize: subsequent forces are O(1).
+                            *node.thunk.borrow_mut() = Thunk::Forced(closure.clone());
                         }
                         None => {
                             // Stack empty → done.
@@ -199,10 +202,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 }
             }
             DBExpr::Var(i) => {
-                let cell = lookup(&env, i);
+                let node = lookup(&env, i);
                 let action = {
-                    let b = cell.borrow();
-                    match &*b {
+                    let t = node.thunk.borrow();
+                    match &*t {
                         Thunk::Forced(c) => Action::Forced(c.clone()),
                         Thunk::Pending { term, env } => Action::Pending(term.clone(), env.clone()),
                         Thunk::Bound { level, name } => Action::Bound(*level, name.clone()),
@@ -217,7 +220,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                     }
                     Action::Pending(term, env_p) => {
                         budget.tick()?;
-                        stack.push(Frame::Update(Rc::clone(&cell)));
+                        stack.push(Frame::Update(Rc::clone(&node)));
                         focus = term;
                         env = env_p;
                     }
@@ -287,8 +290,7 @@ pub fn nf(
             Step::Process(term, env, depth) => match whnf(&term, &env, budget)? {
                 Value::Cls(c) => {
                     let name = c.binder_name.clone();
-                    let bound = Thunk::bound(depth, name.clone());
-                    let new_env = extend(&c.env, bound);
+                    let new_env = extend_bound(&c.env, depth, name.clone());
                     // Push BuildAbs FIRST so it runs after the body is done.
                     work.push(Step::BuildAbs(name));
                     work.push(Step::Process(c.body, new_env, depth + 1));
@@ -339,22 +341,28 @@ mod tests {
 
     #[test]
     fn lookup_returns_pushed_thunk_at_index_zero() {
-        let env: Env = empty_env();
-        let t = Thunk::pending(dvar(0), empty_env());
-        let env = extend(&env, t.clone());
-        // Index 0 should be the thunk we just pushed.
-        assert!(Rc::ptr_eq(&lookup(&env, 0), &t));
+        let env = extend_pending(&empty_env(), dvar(0), empty_env());
+        // Index 0 should be the env-node we just pushed.
+        let node = lookup(&env, 0);
+        assert!(matches!(&*node.thunk.borrow(), Thunk::Pending { .. }));
     }
 
     #[test]
     fn lookup_resolves_outer_via_higher_index() {
-        let env: Env = empty_env();
-        let outer = Thunk::pending(dvar(7), empty_env());
-        let inner = Thunk::pending(dvar(8), empty_env());
-        let env = extend(&env, outer.clone());
-        let env = extend(&env, inner.clone());
-        assert!(Rc::ptr_eq(&lookup(&env, 0), &inner));
-        assert!(Rc::ptr_eq(&lookup(&env, 1), &outer));
+        let env = extend_pending(&empty_env(), dvar(7), empty_env());
+        let env = extend_pending(&env, dvar(8), empty_env());
+        let inner = lookup(&env, 0);
+        let outer = lookup(&env, 1);
+        let inner_term = match &*inner.thunk.borrow() {
+            Thunk::Pending { term, .. } => term.clone(),
+            _ => panic!("expected Pending"),
+        };
+        let outer_term = match &*outer.thunk.borrow() {
+            Thunk::Pending { term, .. } => term.clone(),
+            _ => panic!("expected Pending"),
+        };
+        assert_eq!(inner_term, dvar(8));
+        assert_eq!(outer_term, dvar(7));
     }
 
     // ---- whnf ----
@@ -464,19 +472,21 @@ mod tests {
 
     #[test]
     fn forced_thunk_can_be_replaced() {
-        // Smoke-test the mutability story: take a Pending cell, replace
-        // its contents with Forced — all references see the change.
-        let cell = Thunk::pending(dvar(0), empty_env());
-        let observer = Rc::clone(&cell);
+        // Build an env with one Pending node, take a second Rc to it,
+        // then replace its inner thunk and verify the second Rc observes
+        // the change (RefCell mutability via shared Rc).
+        let env = extend_pending(&empty_env(), dvar(0), empty_env());
+        let node = lookup(&env, 0);
+        let observer = Rc::clone(&node);
 
         let dummy_closure = Closure {
             body: dvar(0),
             env: empty_env(),
             binder_name: "x".into(),
         };
-        *cell.borrow_mut() = Thunk::Forced(dummy_closure);
+        *node.thunk.borrow_mut() = Thunk::Forced(dummy_closure);
 
-        let is_forced = matches!(&*observer.borrow(), Thunk::Forced(_));
+        let is_forced = matches!(&*observer.thunk.borrow(), Thunk::Forced(_));
         assert!(is_forced, "observer still sees Pending after replacement");
     }
 }

@@ -6,7 +6,7 @@ use lc::eval::{inline_defs, normalize};
 use lc::parser::parse_program;
 use lc::pretty::print;
 
-const DEFAULT_STEP_LIMIT: usize = 100_000_000;
+const DEFAULT_STEP_LIMIT: usize = 100_000_000_000;
 const PRELUDE_PATH: &str = "lib/prelude.lc";
 
 fn load_prelude() -> Program {
@@ -32,7 +32,10 @@ fn merge(prelude: Program, user: Program) -> Program {
     // then user defs (which may reference prelude), then user main.
     let mut defs = prelude.defs;
     defs.extend(user.defs);
-    Program { defs, main: user.main }
+    Program {
+        defs,
+        main: user.main,
+    }
 }
 
 fn main() {

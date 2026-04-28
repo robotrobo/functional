@@ -18,12 +18,16 @@ use lc::debruijn;
 use lc::eval::inline_defs;
 use lc::parser::parse_program;
 
-const ITERATIONS: usize = 5_000;
-const WORKLOAD: &str = "fact (succ (succ five))"; // fact 7
+const ITERATIONS: usize = 5;
+const WORKLOAD: &str = "ack three five"; // ack(3,5) = 253; one iter ~2-3s
+
+const PRELUDE_EXTRA: &str = r"
+def ack = Y (\f.\m.\n. if (isZero m) (succ n) (if (isZero n) (f (pred m) one) (f (pred m) (f m (pred n)))))
+";
 
 fn main() {
     let prelude = std::fs::read_to_string("lib/prelude.lc").expect("prelude");
-    let combined = format!("{}\n{}", prelude, WORKLOAD);
+    let combined = format!("{}\n{}\n{}", prelude, PRELUDE_EXTRA, WORKLOAD);
     let prog = parse_program(&combined).expect("parse");
     let inlined = inline_defs(&prog).expect("inline");
     let db = debruijn::to_db(&inlined);
@@ -31,7 +35,7 @@ fn main() {
     eprintln!("running {} iterations of `{}`...", ITERATIONS, WORKLOAD);
     let t0 = std::time::Instant::now();
     for _ in 0..ITERATIONS {
-        let mut budget = Budget::new(10_000_000);
+        let mut budget = Budget::new(200_000_000);
         let r = cbn::nf(&db, &cbn::empty_env(), 0, &mut budget).expect("nf");
         std::hint::black_box(r);
     }

@@ -1,0 +1,21 @@
+def eight  = succ seven
+def nine   = succ eight
+def ten    = succ nine
+def eleven = succ ten
+def twelve = succ eleven
+
+def ack = Y (\f.\m.\n.
+            if (isZero m)
+               (succ n)
+               (if (isZero n)
+                   (f (pred m) one)
+                   (f (pred m) (f m (pred n)))))
+
+def fib = Y (\f.\n.
+            if (isZero n)
+               zero
+               (if (isZero (sub n one))
+                   one
+                   (add (f (sub n one)) (f (sub n two)))))
+
+ack three seven   -- = 1021
