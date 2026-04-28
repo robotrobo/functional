@@ -1,0 +1,2 @@
+-- numeric literals desugar to Church numerals at parse time
+fact 5

@@ -32,3 +32,31 @@ fn list_length_three() {
         "3",
     );
 }
+
+// -------- numeric literals (parse-time Church desugaring) --------
+
+#[test]
+fn literal_zero_prints_as_zero() {
+    assert_eq!(run_with_prelude("0"), "0");
+}
+
+#[test]
+fn literal_addition() {
+    assert_eq!(run_with_prelude("add 5 3"), "8");
+}
+
+#[test]
+fn literal_multiplication() {
+    assert_eq!(run_with_prelude("mul 6 7"), "42");
+}
+
+#[test]
+fn literal_factorial() {
+    assert_eq!(run_with_prelude("fact 5"), "120");
+}
+
+#[test]
+fn literal_and_named_numeral_agree() {
+    // 3 (literal) should reduce to the same value as `three` (prelude def).
+    assert_eq!(run_with_prelude("3"), run_with_prelude("three"));
+}

@@ -76,9 +76,35 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
         .then_ignore(hws())
 }
 
+/// Build the Church numeral for `n`: `\f. \x. f^n x`. Used to elaborate
+/// numeric literals at parse time. The result is a closed term that does
+/// not depend on `succ`/`zero` being defined — so numeric literals work
+/// even without the prelude loaded.
+fn church_numeral(n: u64) -> Expr {
+    let mut body = Expr::var("x");
+    for _ in 0..n {
+        body = Expr::app(Expr::var("f"), body);
+    }
+    Expr::abs("f", Expr::abs("x", body))
+}
+
 fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
     recursive(|expr| {
         let var = ident().map(Expr::Var);
+
+        // Decimal literal → Church numeral. Parses one or more digits; a
+        // bare digit run is not a valid identifier (idents must start with
+        // a letter or _), so this never collides with `var`.
+        let numeral = filter(|c: &char| c.is_ascii_digit())
+            .repeated()
+            .at_least(1)
+            .collect::<String>()
+            .then_ignore(hws())
+            .try_map(|s: String, span| {
+                s.parse::<u64>()
+                    .map(church_numeral)
+                    .map_err(|e| Simple::custom(span, format!("invalid numeric literal: {e}")))
+            });
 
         let lambda = just('\\')
             .then_ignore(hws())
@@ -94,7 +120,7 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then_ignore(just(')'))
             .then_ignore(hws());
 
-        let atom = choice((lambda, parens, var));
+        let atom = choice((lambda, parens, numeral, var));
 
         atom.repeated()
             .at_least(1)
@@ -237,6 +263,67 @@ mod tests {
     #[test]
     fn parse_underscore_identifier() {
         assert_eq!(parse_expr("_foo").unwrap(), Expr::var("_foo"));
+    }
+
+    #[test]
+    fn parse_zero_literal() {
+        // 0 → \f. \x. x
+        assert_eq!(
+            parse_expr("0").unwrap(),
+            Expr::abs("f", Expr::abs("x", Expr::var("x"))),
+        );
+    }
+
+    #[test]
+    fn parse_one_literal() {
+        // 1 → \f. \x. f x
+        assert_eq!(
+            parse_expr("1").unwrap(),
+            Expr::abs(
+                "f",
+                Expr::abs("x", Expr::app(Expr::var("f"), Expr::var("x"))),
+            ),
+        );
+    }
+
+    #[test]
+    fn parse_three_literal() {
+        // 3 → \f. \x. f (f (f x))
+        let inner = Expr::app(
+            Expr::var("f"),
+            Expr::app(Expr::var("f"), Expr::app(Expr::var("f"), Expr::var("x"))),
+        );
+        assert_eq!(
+            parse_expr("3").unwrap(),
+            Expr::abs("f", Expr::abs("x", inner)),
+        );
+    }
+
+    #[test]
+    fn parse_numeric_literal_in_application() {
+        // `add 1 2` — the parser should accept literals as atoms in
+        // application juxtaposition.
+        assert_eq!(
+            parse_expr("add 1 2").unwrap(),
+            Expr::app(
+                Expr::app(Expr::var("add"), parse_expr("1").unwrap()),
+                parse_expr("2").unwrap(),
+            ),
+        );
+    }
+
+    #[test]
+    fn identifiers_starting_with_digit_still_rejected() {
+        // `5x` should NOT parse as identifier (idents start with letter/_).
+        // `5 x` parses as `5` applied to `x`. This test confirms the
+        // numeric and identifier alphabets stay disjoint at the start.
+        assert!(parse_expr("5abc").is_err() || {
+            // Acceptable shape: parsed as `5` applied to `abc` after a
+            // tokenization gap. Either failure or correct app is fine —
+            // what we want to forbid is a single ident named "5abc".
+            let parsed = parse_expr("5abc").unwrap();
+            matches!(parsed, Expr::App(..))
+        });
     }
 
     #[test]
