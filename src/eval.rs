@@ -62,20 +62,12 @@ pub fn reduce_step(e: &Expr) -> Option<Expr> {
     }
 }
 
-pub fn normalize(e: &Expr, _max_steps: usize) -> Result<Expr, EvalError> {
-    // Call-by-need (Phase B.2): convert to DB, evaluate via thunked
-    // environment-based reduction, reify back to named Expr.
-    //
-    // The `_max_steps` cap from the substitution-based versions doesn't
-    // map cleanly here — we don't count β-reductions externally. For
-    // termination we'd need either a recursion-depth guard or a step
-    // counter threaded through `whnf`. For now, divergent terms (Ω,
-    // unguarded Y) will stack-overflow rather than return a clean
-    // StepLimitExceeded. TODO: re-add a budget.
-    use crate::cbn;
+pub fn normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
+    use crate::cbn::{self, Budget};
     use crate::debruijn::{to_db, to_named};
     let db = to_db(e);
-    let result = cbn::nf(&db, &Vec::new(), 0);
+    let mut budget = Budget::new(max_steps);
+    let result = cbn::nf(&db, &Vec::new(), 0, &mut budget)?;
     Ok(to_named(&result))
 }
 
@@ -293,17 +285,18 @@ mod tests {
         assert!(alpha_eq(&stepped, &Expr::abs("z", Expr::var("z"))));
     }
     // - Step limit hit: (\x. x x) (\x. x x) should return Err(StepLimitExceeded(...))
-    // Phase B.2 dropped the step counter in favor of pure CBN; ignore until budget is wired back in.
     #[test]
-    #[ignore = "TODO B.2: add a recursion/step budget so divergent terms return StepLimitExceeded instead of overflowing"]
     fn normalize_step_limit_omega() {
         let e = Expr::app(
             Expr::abs("x", Expr::app(Expr::var("x"), Expr::var("x"))),
             Expr::abs("x", Expr::app(Expr::var("x"), Expr::var("x"))),
         );
+        // Budget kept small so the limit fires before the recursive whnf
+        // call stack overflows. (Each Ω step adds a frame; CBN is not
+        // tail-recursive yet.)
         assert!(matches!(
-            normalize(&e, 10000),
-            Err(EvalError::StepLimitExceeded(10000))
+            normalize(&e, 200),
+            Err(EvalError::StepLimitExceeded(200))
         ));
     }
 

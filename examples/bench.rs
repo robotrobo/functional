@@ -1,11 +1,12 @@
-//! Tiny ad-hoc bench: compare named substitution vs De Bruijn on a
-//! non-trivial Church-numeral computation.
+//! Tiny ad-hoc bench: compare named substitution, De Bruijn substitution,
+//! and call-by-need (current `normalize`) on Church-numeral programs.
 //!
 //! Run with: `cargo run --release --example bench`
 
 use std::time::Instant;
 
 use lc::ast::Expr;
+use lc::cbn;
 use lc::debruijn;
 use lc::error::EvalError;
 use lc::eval::{alpha_eq, inline_defs, reduce_step};
@@ -33,33 +34,43 @@ fn db_normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
     Err(EvalError::StepLimitExceeded(max_steps))
 }
 
-fn run_case(label: &str, user_src: &str, limit: usize) {
+fn cbn_normalize(e: &Expr) -> Expr {
+    let db = debruijn::to_db(e);
+    let mut budget = cbn::Budget::new(10_000_000);
+    let result = cbn::nf(&db, &Vec::new(), 0, &mut budget).unwrap();
+    debruijn::to_named(&result)
+}
+
+fn run_case(label: &str, user_src: &str, named_limit: usize) {
     let prelude = std::fs::read_to_string("lib/prelude.lc").unwrap();
     let combined = format!("{}\n{}", prelude, user_src);
     let prog = parse_program(&combined).unwrap();
     let inlined = inline_defs(&prog).unwrap();
 
     let t0 = Instant::now();
-    let r_named = named_normalize(&inlined, limit);
+    let r_named = named_normalize(&inlined, named_limit);
     let t_named = t0.elapsed();
 
     let t0 = Instant::now();
-    let r_db = db_normalize(&inlined, limit);
+    let r_db = db_normalize(&inlined, named_limit);
     let t_db = t0.elapsed();
 
-    let speedup = t_named.as_secs_f64() / t_db.as_secs_f64();
-    let same = match (&r_named, &r_db) {
-        (Ok(a), Ok(b)) => alpha_eq(a, b),
+    let t0 = Instant::now();
+    let r_cbn = cbn_normalize(&inlined);
+    let t_cbn = t0.elapsed();
+
+    let agree = match (&r_named, &r_db) {
+        (Ok(a), Ok(b)) => alpha_eq(a, b) && alpha_eq(a, &r_cbn),
         _ => false,
     };
 
     println!(
-        "{label:<24}  named: {t_named:>10.3?}  db: {t_db:>10.3?}  speedup: {speedup:>5.2}x  agree: {same}"
+        "{label:<14}  named: {t_named:>10.3?}  db-subst: {t_db:>10.3?}  cbn: {t_cbn:>10.3?}  agree: {agree}"
     );
 }
 
 fn main() {
-    println!("== lc bench (named vs De Bruijn) ==\n");
+    println!("== lc bench (named subst / DB subst / call-by-need) ==\n");
     run_case("fact 3", "fact three", 1_000_000);
     run_case("fact 4", "fact four", 5_000_000);
     run_case("fact 5", "fact five", 20_000_000);

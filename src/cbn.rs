@@ -20,6 +20,28 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::debruijn::DBExpr;
+use crate::error::EvalError;
+
+/// Reduction budget. Tick on each β-reduction and each pending-thunk
+/// force; when exhausted, callers return `EvalError::StepLimitExceeded`.
+pub struct Budget {
+    limit: usize,
+    used: usize,
+}
+
+impl Budget {
+    pub fn new(limit: usize) -> Self {
+        Self { limit, used: 0 }
+    }
+    pub fn tick(&mut self) -> Result<(), EvalError> {
+        if self.used >= self.limit {
+            Err(EvalError::StepLimitExceeded(self.limit))
+        } else {
+            self.used += 1;
+            Ok(())
+        }
+    }
+}
 
 /// An environment: a stack of shared, mutable thunk cells.
 ///
@@ -100,23 +122,25 @@ pub enum Value {
 }
 
 /// Reduce `term @ env` to weak-head form. Pushes args onto neutral heads
-/// when applicable. β-reduces when the head is a closure.
-pub fn whnf(term: &DBExpr, env: &Env) -> Value {
+/// when applicable. β-reduces when the head is a closure. Returns
+/// `StepLimitExceeded` when the budget is exhausted.
+pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, EvalError> {
     match term {
         DBExpr::Var(i) => {
             let cell = lookup(env, *i);
-            force(&cell)
+            force(&cell, budget)
         }
-        DBExpr::Abs(name, body) => Value::Cls(Closure {
+        DBExpr::Abs(name, body) => Ok(Value::Cls(Closure {
             body: (**body).clone(),
             env: env.clone(),
             binder_name: name.clone(),
-        }),
-        DBExpr::App(f, x) => match whnf(f, env) {
+        })),
+        DBExpr::App(f, x) => match whnf(f, env, budget)? {
             Value::Cls(c) => {
+                budget.tick()?;
                 let arg_thunk = Thunk::pending((**x).clone(), env.clone());
                 let new_env = extend(&c.env, arg_thunk);
-                whnf(&c.body, &new_env)
+                whnf(&c.body, &new_env, budget)
             }
             Value::Neu {
                 head_level,
@@ -124,11 +148,11 @@ pub fn whnf(term: &DBExpr, env: &Env) -> Value {
                 mut args,
             } => {
                 args.push(((**x).clone(), env.clone()));
-                Value::Neu {
+                Ok(Value::Neu {
                     head_level,
                     head_name,
                     args,
-                }
+                })
             }
         },
     }
@@ -144,41 +168,45 @@ pub fn whnf(term: &DBExpr, env: &Env) -> Value {
 /// any recursive force of the same cell during its own reduction
 /// (which Y combinator self-application can cause) would see the
 /// placeholder instead of the real term — silent corruption.
-fn force(cell: &Rc<RefCell<Thunk>>) -> Value {
+fn force(cell: &Rc<RefCell<Thunk>>, budget: &mut Budget) -> Result<Value, EvalError> {
     let (term, env) = {
         let borrow = cell.borrow();
         match &*borrow {
-            Thunk::Forced(c) => return Value::Cls(c.clone()),
+            Thunk::Forced(c) => return Ok(Value::Cls(c.clone())),
             Thunk::Bound { level, name } => {
-                return Value::Neu {
+                return Ok(Value::Neu {
                     head_level: *level,
                     head_name: name.clone(),
                     args: Vec::new(),
-                };
+                });
             }
             Thunk::Pending { term, env } => (term.clone(), env.clone()),
         }
     };
-    let result = whnf(&term, &env);
+    budget.tick()?;
+    let result = whnf(&term, &env, budget)?;
     if let Value::Cls(c) = &result {
         *cell.borrow_mut() = Thunk::Forced(c.clone());
     }
-    result
+    Ok(result)
 }
 
 /// Reduce `term @ env` to full normal form, producing a closed `DBExpr`.
 /// `depth` is the number of binders we're currently *inside* during the
 /// reification walk; needed to translate Bound levels into De Bruijn
 /// indices.
-pub fn nf(term: &DBExpr, env: &Env, depth: usize) -> DBExpr {
-    match whnf(term, env) {
+pub fn nf(
+    term: &DBExpr,
+    env: &Env,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<DBExpr, EvalError> {
+    match whnf(term, env, budget)? {
         Value::Cls(c) => {
-            // Descend under the binder: push a Bound at the current depth,
-            // normalize the body, wrap the result in an Abs.
             let bound = Thunk::bound(depth, c.binder_name.clone());
             let new_env = extend(&c.env, bound);
-            let body_nf = nf(&c.body, &new_env, depth + 1);
-            DBExpr::abs(c.binder_name, body_nf)
+            let body_nf = nf(&c.body, &new_env, depth + 1, budget)?;
+            Ok(DBExpr::abs(c.binder_name, body_nf))
         }
         Value::Neu {
             head_level,
@@ -187,9 +215,9 @@ pub fn nf(term: &DBExpr, env: &Env, depth: usize) -> DBExpr {
         } => {
             let mut result = DBExpr::Var(depth - 1 - head_level);
             for (a_term, a_env) in args {
-                result = DBExpr::app(result, nf(&a_term, &a_env, depth));
+                result = DBExpr::app(result, nf(&a_term, &a_env, depth, budget)?);
             }
-            result
+            Ok(result)
         }
     }
 }
@@ -238,10 +266,14 @@ mod tests {
         }
     }
 
+    fn budget() -> Budget {
+        Budget::new(10_000)
+    }
+
     #[test]
     fn whnf_of_lambda_is_self() {
         let term = dabs("x", dvar(0));
-        let c = assert_closure(whnf(&term, &Vec::new()));
+        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
         assert_eq!(c.body, dvar(0));
         assert_eq!(c.binder_name, "x");
         assert!(c.env.is_empty());
@@ -252,7 +284,7 @@ mod tests {
         let id = dabs("x", dvar(0));
         let id2 = dabs("y", dvar(0));
         let term = dapp(id, id2);
-        let c = assert_closure(whnf(&term, &Vec::new()));
+        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
         assert_eq!(c.body, dvar(0));
         assert_eq!(c.binder_name, "y");
     }
@@ -263,7 +295,7 @@ mod tests {
         let arg1 = dabs("a", dvar(0));
         let arg2 = dabs("b", dvar(0));
         let term = dapp(dapp(const_fn, arg1), arg2);
-        let c = assert_closure(whnf(&term, &Vec::new()));
+        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
         assert_eq!(c.binder_name, "a");
         assert_eq!(c.body, dvar(0));
     }
@@ -275,20 +307,32 @@ mod tests {
         let arg = dapp(id_y, id_z);
         let id_x = dabs("x", dvar(0));
         let term = dapp(id_x, arg);
-        let c = assert_closure(whnf(&term, &Vec::new()));
+        let c = assert_closure(whnf(&term, &Vec::new(), &mut budget()).unwrap());
         assert_eq!(c.binder_name, "z");
         assert_eq!(c.body, dvar(0));
+    }
+
+    #[test]
+    fn whnf_omega_exhausts_budget() {
+        // (\x. x x) (\x. x x) — Ω. Should hit the step limit.
+        let omega_lambda = dabs("x", dapp(dvar(0), dvar(0)));
+        let term = dapp(omega_lambda.clone(), omega_lambda);
+        let mut b = Budget::new(100);
+        assert!(matches!(
+            whnf(&term, &Vec::new(), &mut b),
+            Err(EvalError::StepLimitExceeded(100)),
+        ));
     }
 
     // ---- nf ----
 
     #[test]
     fn nf_identity() {
-        // (\x. x) (\y. y)  →  \y. y  in DB: \. 0
+        // (\x. x) (\y. y)  →  \y. y
         let id = dabs("x", dvar(0));
         let id2 = dabs("y", dvar(0));
         let term = dapp(id, id2);
-        let result = nf(&term, &Vec::new(), 0);
+        let result = nf(&term, &Vec::new(), 0, &mut budget()).unwrap();
         assert_eq!(result, dabs("y", dvar(0)));
     }
 
@@ -297,18 +341,17 @@ mod tests {
         // \f. (\y. y) f  →  \f. f
         let inner = dapp(dabs("y", dvar(0)), dvar(0));
         let term = dabs("f", inner);
-        let result = nf(&term, &Vec::new(), 0);
+        let result = nf(&term, &Vec::new(), 0, &mut budget()).unwrap();
         assert_eq!(result, dabs("f", dvar(0)));
     }
 
     #[test]
     fn nf_church_two_normalizes_to_self() {
-        // \f. \x. f (f x) is already in NF
         let two = dabs(
             "f",
             dabs("x", dapp(dvar(1), dapp(dvar(1), dvar(0)))),
         );
-        let result = nf(&two, &Vec::new(), 0);
+        let result = nf(&two, &Vec::new(), 0, &mut budget()).unwrap();
         assert_eq!(result, two);
     }
 
