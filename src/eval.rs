@@ -63,12 +63,18 @@ pub fn reduce_step(e: &Expr) -> Option<Expr> {
 }
 
 pub fn normalize(e: &Expr, max_steps: usize) -> Result<Expr, EvalError> {
+    Ok(normalize_with_steps(e, max_steps)?.0)
+}
+
+/// Like `normalize`, but also returns the number of CBN steps consumed.
+/// Used by benchmarks and α-equivalence parity tests.
+pub fn normalize_with_steps(e: &Expr, max_steps: usize) -> Result<(Expr, usize), EvalError> {
     use crate::cbn::{self, Budget};
     use crate::debruijn::{to_db, to_named};
     let db = to_db(e);
     let mut budget = Budget::new(max_steps);
     let result = cbn::nf(&db, &cbn::empty_env(), 0, &mut budget)?;
-    Ok(to_named(&result))
+    Ok((to_named(&result), budget.consumed()))
 }
 
 /// Inline all `def`s into `main`. Each def is also inlined into subsequent

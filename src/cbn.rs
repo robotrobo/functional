@@ -41,6 +41,9 @@ impl Budget {
             Ok(())
         }
     }
+    pub fn consumed(&self) -> usize {
+        self.used
+    }
 }
 
 /// A persistent stack of env nodes. Cons-list shape; clone and extend

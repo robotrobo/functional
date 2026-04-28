@@ -5,6 +5,7 @@ use lc::ast::Program;
 use lc::eval::{inline_defs, normalize};
 use lc::parser::parse_program;
 use lc::pretty::print;
+use lc::simplify::simplify;
 
 const DEFAULT_STEP_LIMIT: usize = 100_000_000_000;
 const PRELUDE_PATH: &str = "lib/prelude.lc";
@@ -55,7 +56,16 @@ fn main() {
 }
 
 fn real_main() {
-    let args: Vec<String> = env::args().collect();
+    let raw: Vec<String> = env::args().collect();
+    let mut no_simplify = false;
+    let mut args: Vec<String> = Vec::with_capacity(raw.len());
+    for a in raw {
+        if a == "--no-simplify" {
+            no_simplify = true;
+        } else {
+            args.push(a);
+        }
+    }
     if args.len() < 2 {
         let prelude = load_prelude();
         lc::repl::run(prelude.defs);
@@ -93,7 +103,8 @@ fn real_main() {
             process::exit(1);
         }
     };
-    match normalize(&inlined, DEFAULT_STEP_LIMIT) {
+    let prepared = if no_simplify { inlined } else { simplify(&inlined) };
+    match normalize(&prepared, DEFAULT_STEP_LIMIT) {
         Ok(nf) => println!("{}", print(&nf)),
         Err(e) => {
             eprintln!("{}", e);

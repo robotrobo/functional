@@ -5,6 +5,7 @@ use crate::ast::{Def, Program};
 use crate::eval::{inline_defs, normalize};
 use crate::parser::parse_program;
 use crate::pretty::print;
+use crate::simplify::simplify;
 
 const STEP_LIMIT: usize = 1_000_000;
 
@@ -82,10 +83,13 @@ fn evaluate(line: &str, env: &mut Vec<Def>) {
             main: Some(main),
         };
         match inline_defs(&program) {
-            Ok(e) => match normalize(&e, STEP_LIMIT) {
-                Ok(nf) => println!("{}", print(&nf)),
-                Err(err) => eprintln!("{}", err),
-            },
+            Ok(e) => {
+                let prepared = simplify(&e);
+                match normalize(&prepared, STEP_LIMIT) {
+                    Ok(nf) => println!("{}", print(&nf)),
+                    Err(err) => eprintln!("{}", err),
+                }
+            }
             Err(err) => eprintln!("{}", err),
         }
     }
