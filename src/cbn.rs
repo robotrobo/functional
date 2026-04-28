@@ -255,31 +255,78 @@ enum Action {
 /// `depth` is the number of binders we're currently *inside* during the
 /// reification walk; needed to translate Bound levels into De Bruijn
 /// indices.
+/// Iterative full normal form using two heap-allocated stacks (`work` of
+/// pending steps, `done` of finished sub-results). Each leaf-recursive call
+/// in the equivalent tree-recursive version becomes a `Process` step; each
+/// "after the recursion, combine" continuation becomes a `BuildAbs` /
+/// `BuildNeutral` step.
+///
+/// The Rust call stack stays flat regardless of output tree depth — useful
+/// for things like factorial that produce thousand-deep App chains.
 pub fn nf(
     term: &DBExpr,
     env: &Env,
     depth: usize,
     budget: &mut Budget,
 ) -> Result<DBExpr, EvalError> {
-    match whnf(term, env, budget)? {
-        Value::Cls(c) => {
-            let bound = Thunk::bound(depth, c.binder_name.clone());
-            let new_env = extend(&c.env, bound);
-            let body_nf = nf(&c.body, &new_env, depth + 1, budget)?;
-            Ok(DBExpr::abs(c.binder_name, body_nf))
-        }
-        Value::Neu {
-            head_level,
-            head_name: _,
-            args,
-        } => {
-            let mut result = DBExpr::Var(depth - 1 - head_level);
-            for (a_term, a_env) in args {
-                result = DBExpr::app(result, nf(&a_term, &a_env, depth, budget)?);
+    enum Step {
+        /// Reduce `(term, env)` at `depth` and dispatch on the resulting Value.
+        Process(DBExpr, Env, usize),
+        /// `done` already has a body; pop it and wrap as `Abs(name, body)`.
+        BuildAbs(String),
+        /// `done` already has `k` args; pop them, build the neutral
+        /// `Var(depth - 1 - head_level) <args>`.
+        BuildNeutral { head_level: usize, k: usize, depth: usize },
+    }
+
+    let mut work: Vec<Step> = vec![Step::Process(term.clone(), env.clone(), depth)];
+    let mut done: Vec<DBExpr> = Vec::new();
+
+    while let Some(step) = work.pop() {
+        match step {
+            Step::Process(term, env, depth) => match whnf(&term, &env, budget)? {
+                Value::Cls(c) => {
+                    let name = c.binder_name.clone();
+                    let bound = Thunk::bound(depth, name.clone());
+                    let new_env = extend(&c.env, bound);
+                    // Push BuildAbs FIRST so it runs after the body is done.
+                    work.push(Step::BuildAbs(name));
+                    work.push(Step::Process(c.body, new_env, depth + 1));
+                }
+                Value::Neu {
+                    head_level,
+                    head_name: _,
+                    args,
+                } => {
+                    let k = args.len();
+                    work.push(Step::BuildNeutral { head_level, k, depth });
+                    // Push args in reverse so they pop in original order.
+                    for (a_term, a_env) in args.into_iter().rev() {
+                        work.push(Step::Process(a_term, a_env, depth));
+                    }
+                }
+            },
+            Step::BuildAbs(name) => {
+                let body_nf = done.pop().expect("nf: BuildAbs missing body");
+                done.push(DBExpr::abs(name, body_nf));
             }
-            Ok(result)
+            Step::BuildNeutral { head_level, k, depth } => {
+                let mut args: Vec<DBExpr> = Vec::with_capacity(k);
+                for _ in 0..k {
+                    args.push(done.pop().expect("nf: BuildNeutral missing arg"));
+                }
+                args.reverse();
+                let mut result = DBExpr::Var(depth - 1 - head_level);
+                for a in args {
+                    result = DBExpr::app(result, a);
+                }
+                done.push(result);
+            }
         }
     }
+
+    debug_assert_eq!(done.len(), 1, "nf: expected one result, got {}", done.len());
+    Ok(done.pop().unwrap())
 }
 
 #[cfg(test)]

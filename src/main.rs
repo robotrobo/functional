@@ -6,7 +6,7 @@ use lc::eval::{inline_defs, normalize};
 use lc::parser::parse_program;
 use lc::pretty::print;
 
-const DEFAULT_STEP_LIMIT: usize = 1_000_000;
+const DEFAULT_STEP_LIMIT: usize = 100_000_000;
 const PRELUDE_PATH: &str = "lib/prelude.lc";
 
 fn load_prelude() -> Program {
@@ -36,6 +36,22 @@ fn merge(prelude: Program, user: Program) -> Program {
 }
 
 fn main() {
+    // Heavy reduction (e.g. fact 9) builds Expr trees deep enough that the
+    // recursive Drop blows the OS-default 8 MB main-thread stack. Run on a
+    // worker thread with a generous stack to sidestep this until we make
+    // Expr's Drop iterative.
+    const WORKER_STACK: usize = 64 * 1024 * 1024; // 64 MB
+    let handle = std::thread::Builder::new()
+        .stack_size(WORKER_STACK)
+        .spawn(real_main)
+        .expect("spawn worker");
+    if let Err(panic) = handle.join() {
+        eprintln!("worker panicked: {:?}", panic);
+        process::exit(1);
+    }
+}
+
+fn real_main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         let prelude = load_prelude();

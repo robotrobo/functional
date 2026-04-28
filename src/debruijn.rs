@@ -168,36 +168,64 @@ pub fn to_db(e: &Expr) -> DBExpr {
 ///
 /// Panics on free indices.
 pub fn to_named(e: &DBExpr) -> Expr {
-    // Walk with a stack of binder names (outermost first). When we hit a
-    // Var(i), the binder is at stack position `len - 1 - i`. When we
-    // descend into an Abs, push its name hint onto the stack.
-    fn go(e: &DBExpr, env: &mut Vec<String>) -> Expr {
-        match e {
-            DBExpr::Var(i) => {
-                let pos = env
-                    .len()
-                    .checked_sub(1 + *i)
-                    .unwrap_or_else(|| panic!("free index in to_named: {i}"));
-                Expr::var(env[pos].clone())
-            }
-            DBExpr::Abs(name, body) => {
-                // Disambiguate against any outer binder using the same name.
-                // Without this, `\x. \x. 1 0` would render as `\x. \x. x x`,
-                // and any later name-based pass (alpha_eq, or another to_db)
-                // would treat both `x` references as the innermost binder.
-                let mut unique = name.clone();
-                while env.contains(&unique) {
-                    unique.push('\'');
+    // Iterative two-stack walk (work / done) so deep DB trees don't blow
+    // the Rust call stack. Same pattern as `cbn::nf`. The `env` vec tracks
+    // binder names visible at the current scope; we push on Abs descent
+    // and pop after BuildAbs.
+    enum Step<'a> {
+        Process(&'a DBExpr),
+        BuildAbs(String),
+        BuildApp,
+    }
+
+    let mut work: Vec<Step> = vec![Step::Process(e)];
+    let mut done: Vec<Expr> = Vec::new();
+    let mut env: Vec<String> = Vec::new();
+
+    while let Some(step) = work.pop() {
+        match step {
+            Step::Process(e) => match e {
+                DBExpr::Var(i) => {
+                    let pos = env
+                        .len()
+                        .checked_sub(1 + *i)
+                        .unwrap_or_else(|| panic!("free index in to_named: {i}"));
+                    done.push(Expr::var(env[pos].clone()));
                 }
-                env.push(unique.clone());
-                let body_named = go(body, env);
+                DBExpr::Abs(name, body) => {
+                    let mut unique: String = (**name).to_string();
+                    while env.contains(&unique) {
+                        unique.push('\'');
+                    }
+                    env.push(unique.clone());
+                    work.push(Step::BuildAbs(unique));
+                    work.push(Step::Process(body));
+                }
+                DBExpr::App(f, x) => {
+                    work.push(Step::BuildApp);
+                    // Order so f's result is below x's on the done stack —
+                    // we'll pop x first, then f, then build App(f, x).
+                    work.push(Step::Process(x));
+                    work.push(Step::Process(f));
+                }
+            },
+            Step::BuildAbs(name) => {
                 env.pop();
-                Expr::abs(unique, body_named)
+                let body = done.pop().expect("to_named: BuildAbs missing body");
+                done.push(Expr::abs(name, body));
             }
-            DBExpr::App(f, x) => Expr::app(go(f, env), go(x, env)),
+            Step::BuildApp => {
+                // x was pushed last (Process(x) below Process(f)), so
+                // x's NF is on top of `done`; f's is below.
+                let x = done.pop().expect("to_named: BuildApp missing x");
+                let f = done.pop().expect("to_named: BuildApp missing f");
+                done.push(Expr::app(f, x));
+            }
         }
     }
-    go(e, &mut Vec::new())
+
+    debug_assert_eq!(done.len(), 1);
+    done.pop().unwrap()
 }
 
 #[cfg(test)]
