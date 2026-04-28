@@ -121,74 +121,116 @@ pub enum Value {
     },
 }
 
-/// Reduce `term @ env` to weak-head form. Pushes args onto neutral heads
-/// when applicable. β-reduces when the head is a closure. Returns
-/// `StepLimitExceeded` when the budget is exhausted.
+/// A frame on the Krivine work-stack.
+enum Frame {
+    /// Pending application argument. When a closure becomes the focus,
+    /// pop this and β-reduce.
+    Arg(DBExpr, Env),
+    /// Memoization marker. When a closure becomes the focus, write it
+    /// back into this cell (so subsequent forces are O(1)).
+    Update(Rc<RefCell<Thunk>>),
+}
+
+/// Reduce `term @ env` to weak-head form using an iterative Krivine-style
+/// machine. Returns `StepLimitExceeded` when the budget is exhausted.
+///
+/// State is `(focus, env, stack)`. Each loop iteration applies one
+/// transition. The Rust call stack stays flat; the work-stack is
+/// explicit on the heap.
 pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, EvalError> {
-    match term {
-        DBExpr::Var(i) => {
-            let cell = lookup(env, *i);
-            force(&cell, budget)
+    let mut focus: DBExpr = term.clone();
+    let mut env: Env = env.clone();
+    let mut stack: Vec<Frame> = Vec::new();
+
+    loop {
+        match focus {
+            DBExpr::App(f, x) => {
+                // Push the arg (in current env) and shift focus to the function.
+                stack.push(Frame::Arg(*x, env.clone()));
+                focus = *f;
+            }
+            DBExpr::Abs(name, body) => {
+                // We have a value (a closure). Dispatch on the stack.
+                let closure = Closure {
+                    body: *body,
+                    env: env.clone(),
+                    binder_name: name,
+                };
+                loop {
+                    match stack.pop() {
+                        Some(Frame::Arg(arg_term, arg_env)) => {
+                            // β-reduce: bind arg as a thunk in closure's env.
+                            budget.tick()?;
+                            let arg_thunk = Thunk::pending(arg_term, arg_env);
+                            env = extend(&closure.env, arg_thunk);
+                            focus = closure.body;
+                            break; // back to outer loop
+                        }
+                        Some(Frame::Update(cell)) => {
+                            // Memoize: subsequent forces of `cell` are O(1).
+                            *cell.borrow_mut() = Thunk::Forced(closure.clone());
+                            // Continue popping — the same closure is the
+                            // result for any further Update frames or for
+                            // an underlying Arg / empty stack.
+                        }
+                        None => {
+                            // Stack empty → done.
+                            return Ok(Value::Cls(closure));
+                        }
+                    }
+                }
+            }
+            DBExpr::Var(i) => {
+                let cell = lookup(&env, i);
+                let action = {
+                    let b = cell.borrow();
+                    match &*b {
+                        Thunk::Forced(c) => Action::Forced(c.clone()),
+                        Thunk::Pending { term, env } => Action::Pending(term.clone(), env.clone()),
+                        Thunk::Bound { level, name } => Action::Bound(*level, name.clone()),
+                    }
+                };
+                match action {
+                    Action::Forced(c) => {
+                        // Treat as if focus were Abs of c — fall through to
+                        // the same dispatch logic by re-emitting the Abs.
+                        focus = DBExpr::abs(c.binder_name.clone(), c.body.clone());
+                        env = c.env.clone();
+                    }
+                    Action::Pending(term, env_p) => {
+                        budget.tick()?;
+                        stack.push(Frame::Update(Rc::clone(&cell)));
+                        focus = term;
+                        env = env_p;
+                    }
+                    Action::Bound(level, name) => {
+                        // Build a neutral. Pop Args off the stack into the
+                        // neutral's arg list. Discard any Update frames —
+                        // we can't memoize a neutral as a closure.
+                        let mut args: Vec<(DBExpr, Env)> = Vec::new();
+                        while let Some(frame) = stack.pop() {
+                            match frame {
+                                Frame::Arg(t, e) => args.push((t, e)),
+                                Frame::Update(_) => {}
+                            }
+                        }
+                        return Ok(Value::Neu {
+                            head_level: level,
+                            head_name: name,
+                            args,
+                        });
+                    }
+                }
+            }
         }
-        DBExpr::Abs(name, body) => Ok(Value::Cls(Closure {
-            body: (**body).clone(),
-            env: env.clone(),
-            binder_name: name.clone(),
-        })),
-        DBExpr::App(f, x) => match whnf(f, env, budget)? {
-            Value::Cls(c) => {
-                budget.tick()?;
-                let arg_thunk = Thunk::pending((**x).clone(), env.clone());
-                let new_env = extend(&c.env, arg_thunk);
-                whnf(&c.body, &new_env, budget)
-            }
-            Value::Neu {
-                head_level,
-                head_name,
-                mut args,
-            } => {
-                args.push(((**x).clone(), env.clone()));
-                Ok(Value::Neu {
-                    head_level,
-                    head_name,
-                    args,
-                })
-            }
-        },
     }
 }
 
-/// Force a thunk cell to a `Value`. If already `Forced`, returns the
-/// stored closure as `Value::Cls`. If `Bound`, returns a neutral with
-/// no args. Otherwise clones the pending term/env, drops the borrow,
-/// reduces, and writes the closure back (memoization).
-///
-/// Note: we deliberately *clone* the pending term and env instead of
-/// taking them out and replacing with a placeholder. If we replaced,
-/// any recursive force of the same cell during its own reduction
-/// (which Y combinator self-application can cause) would see the
-/// placeholder instead of the real term — silent corruption.
-fn force(cell: &Rc<RefCell<Thunk>>, budget: &mut Budget) -> Result<Value, EvalError> {
-    let (term, env) = {
-        let borrow = cell.borrow();
-        match &*borrow {
-            Thunk::Forced(c) => return Ok(Value::Cls(c.clone())),
-            Thunk::Bound { level, name } => {
-                return Ok(Value::Neu {
-                    head_level: *level,
-                    head_name: name.clone(),
-                    args: Vec::new(),
-                });
-            }
-            Thunk::Pending { term, env } => (term.clone(), env.clone()),
-        }
-    };
-    budget.tick()?;
-    let result = whnf(&term, &env, budget)?;
-    if let Value::Cls(c) = &result {
-        *cell.borrow_mut() = Thunk::Forced(c.clone());
-    }
-    Ok(result)
+/// What to do with a thunk cell after inspecting it. Local to `whnf`.
+enum Action {
+    Forced(Closure),
+    Pending(DBExpr, Env),
+    Bound(usize, String),
 }
 
 /// Reduce `term @ env` to full normal form, producing a closed `DBExpr`.
