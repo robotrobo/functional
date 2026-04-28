@@ -60,3 +60,33 @@ fn literal_and_named_numeral_agree() {
     // 3 (literal) should reduce to the same value as `three` (prelude def).
     assert_eq!(run_with_prelude("3"), run_with_prelude("three"));
 }
+
+// -------- let bindings (parse-time desugar to App-Abs) --------
+
+#[test]
+fn let_binds_a_value() {
+    assert_eq!(run_with_prelude("let x = 5 in x"), "5");
+}
+
+#[test]
+fn let_uses_binding_in_expression() {
+    assert_eq!(run_with_prelude("let x = 3 in add x x"), "6");
+}
+
+#[test]
+fn nested_let_shares_results() {
+    // let x = mul 6 7 in let y = succ x in y  →  43
+    assert_eq!(
+        run_with_prelude("let x = mul 6 7 in let y = succ x in y"),
+        "43",
+    );
+}
+
+#[test]
+fn let_inside_lambda_body() {
+    // (\n. let sq = mul n n in add sq sq) 3  →  18
+    assert_eq!(
+        run_with_prelude("(\\n. let sq = mul n n in add sq sq) 3"),
+        "18",
+    );
+}

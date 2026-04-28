@@ -67,8 +67,8 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
         )
         .collect::<String>()
         .try_map(|s, span| {
-            if s == "def" {
-                Err(Simple::custom(span, "unexpected keyword `def`"))
+            if matches!(s.as_str(), "def" | "let" | "in") {
+                Err(Simple::custom(span, format!("unexpected keyword `{s}`")))
             } else {
                 Ok(s)
             }
@@ -120,7 +120,21 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then_ignore(just(')'))
             .then_ignore(hws());
 
-        let atom = choice((lambda, parens, numeral, var));
+        // let x = e1 in e2  →  (\x. e2) e1
+        // Non-recursive: x is NOT in scope inside e1, only inside e2.
+        // Sequential let-chains fall out for free since e2 is itself an expr.
+        let let_in = text::keyword("let")
+            .then_ignore(hws())
+            .ignore_then(ident())
+            .then_ignore(just('='))
+            .then_ignore(hws())
+            .then(expr.clone())
+            .then_ignore(text::keyword("in"))
+            .then_ignore(hws())
+            .then(expr.clone())
+            .map(|((name, e1), e2)| Expr::app(Expr::abs(name, e2), e1));
+
+        let atom = choice((let_in, lambda, parens, numeral, var));
 
         atom.repeated()
             .at_least(1)
@@ -310,6 +324,42 @@ mod tests {
                 parse_expr("2").unwrap(),
             ),
         );
+    }
+
+    #[test]
+    fn parse_let_in_basic() {
+        // let x = a in x  →  (\x. x) a
+        assert_eq!(
+            parse_expr("let x = a in x").unwrap(),
+            Expr::app(Expr::abs("x", Expr::var("x")), Expr::var("a")),
+        );
+    }
+
+    #[test]
+    fn parse_nested_let() {
+        // let x = a in let y = b in x  →  (\x. (\y. x) b) a
+        let inner = Expr::app(Expr::abs("y", Expr::var("x")), Expr::var("b"));
+        let expected = Expr::app(Expr::abs("x", inner), Expr::var("a"));
+        assert_eq!(parse_expr("let x = a in let y = b in x").unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_let_binding_can_use_application() {
+        // let x = f y in x  →  (\x. x) (f y)
+        assert_eq!(
+            parse_expr("let x = f y in x").unwrap(),
+            Expr::app(
+                Expr::abs("x", Expr::var("x")),
+                Expr::app(Expr::var("f"), Expr::var("y")),
+            ),
+        );
+    }
+
+    #[test]
+    fn parse_let_inside_lambda_body() {
+        // \x. let y = x in y  →  \x. (\y. y) x
+        let body = Expr::app(Expr::abs("y", Expr::var("y")), Expr::var("x"));
+        assert_eq!(parse_expr("\\x. let y = x in y").unwrap(), Expr::abs("x", body));
     }
 
     #[test]

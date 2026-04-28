@@ -1,0 +1,6 @@
+-- multi-line lets need to live inside parens (top-level newlines outside
+-- parens still terminate an expression — that's an existing constraint of
+-- the surface grammar, not a let-specific issue).
+(let x = mul 6 7 in
+ let y = succ x in
+ y)
