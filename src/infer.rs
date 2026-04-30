@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::types::{Scheme, Subst, TVarId, Type};
+use crate::ast::Expr;
+use crate::type_error::TypeError;
+use crate::types::{unify, Scheme, Subst, TVarId, Type};
 
 #[derive(Clone, Default, Debug)]
 pub struct TypeEnv(pub HashMap<String, Scheme>);
@@ -76,6 +78,42 @@ pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Type {
     subst.apply(&scheme.ty)
 }
 
+/// Algorithm W. Returns a substitution and the inferred type. The
+/// substitution must be applied to the result type (and to any caller
+/// state) for the type to be principal at this point.
+pub fn infer_expr(env: &TypeEnv, e: &Expr, fresh: &mut Fresh) -> Result<(Subst, Type), TypeError> {
+    match e {
+        Expr::Var(name) => {
+            let scheme = env
+                .0
+                .get(name)
+                .ok_or_else(|| TypeError::UnboundVar(name.clone()))?;
+            Ok((Subst::empty(), instantiate(scheme, fresh)))
+        }
+        Expr::Abs(param, body) => {
+            let alpha = fresh.tvar();
+            let scheme = Scheme {
+                vars: vec![],
+                ty: alpha.clone(),
+            };
+            let env2 = env.insert(param.clone(), scheme);
+            let (s, t_body) = infer_expr(&env2, body, fresh)?;
+            let arrow = Type::arrow(s.apply(&alpha), t_body);
+            Ok((s, arrow))
+        }
+        Expr::App(e1, e2) => {
+            let (s1, t1) = infer_expr(env, e1, fresh)?;
+            let env2 = env.apply_subst(&s1);
+            let (s2, t2) = infer_expr(&env2, e2, fresh)?;
+            let alpha = fresh.tvar();
+            let s3 = unify(&s2.apply(&t1), &Type::arrow(t2, alpha.clone()))?;
+            let composed = s3.compose(&s2).compose(&s1);
+            let result_ty = s3.apply(&alpha);
+            Ok((composed, result_ty))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +182,73 @@ mod gen_inst_tests {
         } else {
             panic!("expected arrow");
         }
+    }
+}
+
+#[cfg(test)]
+mod infer_expr_tests {
+    use super::*;
+    use crate::ast::Expr;
+
+    fn infer(e: &Expr) -> Result<Type, TypeError> {
+        let mut fresh = Fresh::new();
+        let (s, t) = infer_expr(&TypeEnv::empty(), e, &mut fresh)?;
+        Ok(s.apply(&t))
+    }
+
+    #[test]
+    fn identity_lambda_is_polymorphic() {
+        // \x. x  ⇒  α → α
+        let e = Expr::abs("x", Expr::var("x"));
+        let t = infer(&e).unwrap();
+        if let Type::Arrow(a, b) = &t {
+            assert_eq!(a, b);
+        } else {
+            panic!("not an arrow: {:?}", t);
+        }
+    }
+
+    #[test]
+    fn const_lambda_two_distinct_vars() {
+        // \x. \y. x  ⇒  α → β → α
+        let e = Expr::abs("x", Expr::abs("y", Expr::var("x")));
+        let t = infer(&e).unwrap();
+        match t {
+            Type::Arrow(a, rest) => match *rest {
+                Type::Arrow(_b, c) => assert_eq!(*a, *c),
+                _ => panic!("expected nested arrow"),
+            },
+            _ => panic!("expected arrow"),
+        }
+    }
+
+    #[test]
+    fn application_of_identity() {
+        // (\x. x) (\y. y)  ⇒  α → α
+        let e = Expr::app(
+            Expr::abs("x", Expr::var("x")),
+            Expr::abs("y", Expr::var("y")),
+        );
+        let t = infer(&e).unwrap();
+        if let Type::Arrow(a, b) = &t {
+            assert_eq!(a, b);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn unbound_variable_errors() {
+        let e = Expr::var("nope");
+        let err = infer(&e).unwrap_err();
+        assert!(matches!(err, TypeError::UnboundVar(_)));
+    }
+
+    #[test]
+    fn omega_self_application_fails_occurs_check() {
+        // \x. x x  ⇒  occurs check
+        let e = Expr::abs("x", Expr::app(Expr::var("x"), Expr::var("x")));
+        let err = infer(&e).unwrap_err();
+        assert!(matches!(err, TypeError::OccursCheck(..)));
     }
 }
