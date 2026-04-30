@@ -38,6 +38,11 @@ pub enum DBExpr {
     /// by `cbn::whnf` when focused. Carries no binder of its own, so de
     /// Bruijn indices in `e` are not shifted by it.
     Fix(Rc<DBExpr>),
+    /// A natural number literal. Self-evaluating WHNF.
+    NatLit(u64),
+    /// A primitive operator. Behaves like a constant function value;
+    /// reduced by `cbn::whnf` when saturated with `op.arity()` arguments.
+    Prim(crate::ast::PrimOp),
 }
 
 impl PartialEq for DBExpr {
@@ -52,6 +57,8 @@ impl PartialEq for DBExpr {
             (DBExpr::App(f1, x1), DBExpr::StrictApp(f2, x2))
             | (DBExpr::StrictApp(f1, x1), DBExpr::App(f2, x2)) => f1 == f2 && x1 == x2,
             (DBExpr::Fix(a), DBExpr::Fix(b)) => a == b,
+            (DBExpr::NatLit(a), DBExpr::NatLit(b)) => a == b,
+            (DBExpr::Prim(a), DBExpr::Prim(b)) => a == b,
             _ => false,
         }
     }
@@ -73,6 +80,12 @@ impl DBExpr {
     }
     pub fn fix(e: DBExpr) -> Self {
         DBExpr::Fix(Rc::new(e))
+    }
+    pub fn nat(n: u64) -> Self {
+        DBExpr::NatLit(n)
+    }
+    pub fn prim(op: crate::ast::PrimOp) -> Self {
+        DBExpr::Prim(op)
     }
 }
 
@@ -105,6 +118,7 @@ pub fn shift(d: i64, cutoff: usize, e: &DBExpr) -> DBExpr {
             DBExpr::strict_app(shift(d, cutoff, f), shift(d, cutoff, x))
         }
         DBExpr::Fix(inner) => DBExpr::fix(shift(d, cutoff, inner)),
+        DBExpr::NatLit(_) | DBExpr::Prim(_) => e.clone(),
     }
 }
 
@@ -135,7 +149,7 @@ pub fn reduce_step(e: &DBExpr) -> Option<DBExpr> {
             // fix e ↪ e (fix e). Always reducible at the head.
             Some(DBExpr::app((**inner).clone(), DBExpr::fix((**inner).clone())))
         }
-        DBExpr::Var(_) => None,
+        DBExpr::Var(_) | DBExpr::NatLit(_) | DBExpr::Prim(_) => None,
     }
 }
 
@@ -159,6 +173,7 @@ pub fn subst(k: usize, s: &DBExpr, e: &DBExpr) -> DBExpr {
             DBExpr::strict_app(subst(k, s, f), subst(k, s, x))
         }
         DBExpr::Fix(inner) => DBExpr::fix(subst(k, s, inner)),
+        DBExpr::NatLit(_) | DBExpr::Prim(_) => e.clone(),
     }
 }
 
@@ -188,13 +203,8 @@ pub fn to_db(e: &Expr) -> DBExpr {
             }
             Expr::App(f, x) => DBExpr::app(go(f, env), go(x, env)),
             Expr::Fix(inner) => DBExpr::fix(go(inner, env)),
-            // T3 will add DBExpr::NatLit / DBExpr::Prim variants and
-            // forward properly. Until then, panic if a primitive AST node
-            // ever reaches the de Bruijn engine — it can't, because no
-            // surface syntax produces them yet.
-            Expr::NatLit(_) | Expr::Prim(_) => {
-                unreachable!("primitive AST nodes not yet supported in to_db (added in T3)")
-            }
+            Expr::NatLit(n) => DBExpr::NatLit(*n),
+            Expr::Prim(op) => DBExpr::Prim(*op),
         }
     }
     go(e, &mut Vec::new())
@@ -254,6 +264,8 @@ pub fn to_named(e: &DBExpr) -> Expr {
                     work.push(Step::BuildFix);
                     work.push(Step::Process(inner));
                 }
+                DBExpr::NatLit(n) => done.push(Expr::NatLit(*n)),
+                DBExpr::Prim(op) => done.push(Expr::Prim(*op)),
             },
             Step::BuildAbs(name) => {
                 env.pop();

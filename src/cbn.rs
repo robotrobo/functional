@@ -195,6 +195,12 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 stack.push(Frame::Arg(self_ref, env.clone()));
                 focus = (*inner).clone();
             }
+            DBExpr::NatLit(_) | DBExpr::Prim(_) => {
+                // T4 will implement saturated-application evaluation.
+                // Until then, panic if a primitive reaches the evaluator —
+                // no surface syntax produces these yet.
+                unreachable!("primitives not yet evaluated (T4 follows)")
+            }
             DBExpr::Abs(name, body) => {
                 // We have a value (a closure). Dispatch on the stack.
                 let closure = Closure {

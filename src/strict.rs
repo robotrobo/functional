@@ -39,6 +39,7 @@ pub fn mark_strict(e: &DBExpr) -> DBExpr {
         DBExpr::Abs(name, body) => DBExpr::abs(name.clone(), mark_strict(body)),
         DBExpr::App(_, _) | DBExpr::StrictApp(_, _) => mark_app(e),
         DBExpr::Fix(inner) => DBExpr::fix(mark_strict(inner)),
+        DBExpr::NatLit(_) | DBExpr::Prim(_) => e.clone(),
     }
 }
 
@@ -126,6 +127,9 @@ pub fn head_strict_db(e: &DBExpr, k: usize) -> Vec<usize> {
                 // fix e ↪ e (fix e), which forces e first. Whatever e
                 // forces, fix(e) also forces.
                 go(inner, k, depth, out);
+            }
+            DBExpr::NatLit(_) | DBExpr::Prim(_) => {
+                // Self-evaluating; nothing forced.
             }
         }
     }
