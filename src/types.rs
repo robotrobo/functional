@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use crate::type_error::TypeError;
 
@@ -50,6 +51,63 @@ impl Scheme {
             tv.remove(v);
         }
         tv
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Var(id) => write!(f, "t{}", id),
+            Type::Arrow(a, b) => {
+                let a_str = match **a {
+                    Type::Arrow(_, _) => format!("({})", a),
+                    _ => format!("{}", a),
+                };
+                write!(f, "{} -> {}", a_str, b)
+            }
+        }
+    }
+}
+
+impl fmt::Display for Scheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.vars.is_empty() {
+            return write!(f, "{}", pretty_letters(&self.ty, &[]));
+        }
+        let pretty_ty = pretty_letters(&self.ty, &self.vars);
+        let pretty_vars: Vec<String> = (0..self.vars.len()).map(letter_for_index).collect();
+        write!(f, "forall {}. {}", pretty_vars.join(" "), pretty_ty)
+    }
+}
+
+fn letter_for_index(i: usize) -> String {
+    // 0→"a" .. 25→"z" .. 26→"aa" .. 27→"ab" ...
+    let mut out = String::new();
+    let mut n = i;
+    loop {
+        let r = (n % 26) as u8;
+        out.insert(0, (b'a' + r) as char);
+        if n < 26 {
+            break;
+        }
+        n = n / 26 - 1;
+    }
+    out
+}
+
+fn pretty_letters(t: &Type, bound: &[TVarId]) -> String {
+    match t {
+        Type::Var(id) => match bound.iter().position(|v| v == id) {
+            Some(i) => letter_for_index(i),
+            None => format!("t{}", id),
+        },
+        Type::Arrow(a, b) => {
+            let a_str = match **a {
+                Type::Arrow(_, _) => format!("({})", pretty_letters(a, bound)),
+                _ => pretty_letters(a, bound),
+            };
+            format!("{} -> {}", a_str, pretty_letters(b, bound))
+        }
     }
 }
 
@@ -275,5 +333,47 @@ mod unify_tests {
         let rhs = Type::arrow(Type::var(1), Type::var(2));
         let s = unify(&lhs, &rhs).unwrap();
         assert_eq!(s.apply(&Type::var(1)), s.apply(&Type::var(2)));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn scheme_with_one_quantifier() {
+        let s = Scheme {
+            vars: vec![0],
+            ty: Type::arrow(Type::var(0), Type::var(0)),
+        };
+        assert_eq!(format!("{}", s), "forall a. a -> a");
+    }
+
+    #[test]
+    fn scheme_with_two_quantifiers() {
+        let s = Scheme {
+            vars: vec![0, 1],
+            ty: Type::arrow(Type::var(0), Type::arrow(Type::var(1), Type::var(0))),
+        };
+        assert_eq!(format!("{}", s), "forall a b. a -> b -> a");
+    }
+
+    #[test]
+    fn arrow_left_assoc_parens() {
+        // (a → a) → a
+        let s = Scheme {
+            vars: vec![0],
+            ty: Type::arrow(Type::arrow(Type::var(0), Type::var(0)), Type::var(0)),
+        };
+        assert_eq!(format!("{}", s), "forall a. (a -> a) -> a");
+    }
+
+    #[test]
+    fn no_quantifiers_no_forall() {
+        let s = Scheme {
+            vars: vec![],
+            ty: Type::var(99),
+        };
+        assert_eq!(format!("{}", s), "t99");
     }
 }
