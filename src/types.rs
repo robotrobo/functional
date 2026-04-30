@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub type TVarId = u32;
 
@@ -15,12 +15,40 @@ impl Type {
     pub fn arrow(a: Type, b: Type) -> Self {
         Type::Arrow(Box::new(a), Box::new(b))
     }
+
+    pub fn ftv(&self) -> HashSet<TVarId> {
+        let mut out = HashSet::new();
+        self.collect_ftv(&mut out);
+        out
+    }
+
+    fn collect_ftv(&self, out: &mut HashSet<TVarId>) {
+        match self {
+            Type::Var(id) => {
+                out.insert(*id);
+            }
+            Type::Arrow(a, b) => {
+                a.collect_ftv(out);
+                b.collect_ftv(out);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scheme {
     pub vars: Vec<TVarId>,
     pub ty: Type,
+}
+
+impl Scheme {
+    pub fn ftv(&self) -> HashSet<TVarId> {
+        let mut tv = self.ty.ftv();
+        for v in &self.vars {
+            tv.remove(v);
+        }
+        tv
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -142,5 +170,31 @@ mod subst_tests {
         };
         let s = Subst::singleton(0, Type::var(99));
         assert_eq!(s.apply_scheme(&scheme), scheme);
+    }
+}
+
+#[cfg(test)]
+mod ftv_tests {
+    use super::*;
+
+    #[test]
+    fn ftv_of_var() {
+        assert_eq!(Type::var(3).ftv(), [3].into_iter().collect());
+    }
+
+    #[test]
+    fn ftv_of_arrow() {
+        let t = Type::arrow(Type::var(1), Type::arrow(Type::var(2), Type::var(1)));
+        assert_eq!(t.ftv(), [1, 2].into_iter().collect());
+    }
+
+    #[test]
+    fn scheme_ftv_excludes_bound() {
+        // ∀a. a → b — only b is free.
+        let s = Scheme {
+            vars: vec![0],
+            ty: Type::arrow(Type::var(0), Type::var(1)),
+        };
+        assert_eq!(s.ftv(), [1].into_iter().collect());
     }
 }
