@@ -87,7 +87,33 @@ fn real_main() {
             process::exit(1);
         }
     };
+    let prelude_def_count = load_prelude().defs.len();
     let program = merge(load_prelude(), user);
+
+    // Type-check (advisory): print user-supplied def types and main type to
+    // stderr so stdout remains the evaluation result. Skip prelude defs to
+    // avoid noise.
+    let types = lc::infer::infer_program(&program);
+    for (name, res) in types.defs.iter().skip(prelude_def_count) {
+        match res {
+            Ok(scheme) => eprintln!("{} : {}", name, scheme),
+            Err(e) => eprintln!("{} : (type error: {})", name, e),
+        }
+    }
+    if let Some(t_res) = &types.main_type {
+        match t_res {
+            Ok(t) => {
+                let mut vars: Vec<_> = t.ftv().into_iter().collect();
+                vars.sort();
+                let s = lc::types::Scheme {
+                    vars,
+                    ty: t.clone(),
+                };
+                eprintln!(": {}", s);
+            }
+            Err(e) => eprintln!(": (type error: {})", e),
+        }
+    }
 
     if program.main.is_none() {
         // Library file with only defs — print them and exit.
