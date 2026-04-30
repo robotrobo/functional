@@ -495,6 +495,120 @@ mod tests {
         assert_eq!(stepped, expected);
     }
 
+    // ---- Primitive Nat operations ----
+
+    #[test]
+    fn nat_lit_normalizes_to_self() {
+        let e = Expr::nat(42);
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(42));
+    }
+
+    #[test]
+    fn succ_applied() {
+        // succ 5 = 6
+        let e = Expr::app(Expr::prim(crate::ast::PrimOp::Succ), Expr::nat(5));
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(6));
+    }
+
+    #[test]
+    fn add_applied() {
+        // add 3 4 = 7
+        let e = Expr::app(
+            Expr::app(Expr::prim(crate::ast::PrimOp::Add), Expr::nat(3)),
+            Expr::nat(4),
+        );
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(7));
+    }
+
+    #[test]
+    fn mul_applied() {
+        // mul 6 7 = 42
+        let e = Expr::app(
+            Expr::app(Expr::prim(crate::ast::PrimOp::Mul), Expr::nat(6)),
+            Expr::nat(7),
+        );
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(42));
+    }
+
+    #[test]
+    fn pred_saturates_at_zero() {
+        let e = Expr::app(Expr::prim(crate::ast::PrimOp::Pred), Expr::nat(0));
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(0));
+    }
+
+    #[test]
+    fn sub_saturates_at_zero() {
+        // sub 3 5 = 0
+        let e = Expr::app(
+            Expr::app(Expr::prim(crate::ast::PrimOp::Sub), Expr::nat(3)),
+            Expr::nat(5),
+        );
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(0));
+    }
+
+    #[test]
+    fn ifz_picks_then_branch_on_zero() {
+        // ifz 0 1 2 = 1
+        let e = Expr::app(
+            Expr::app(
+                Expr::app(Expr::prim(crate::ast::PrimOp::IfZ), Expr::nat(0)),
+                Expr::nat(1),
+            ),
+            Expr::nat(2),
+        );
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(1));
+    }
+
+    #[test]
+    fn ifz_picks_else_branch_on_nonzero() {
+        // ifz 5 1 2 = 2
+        let e = Expr::app(
+            Expr::app(
+                Expr::app(Expr::prim(crate::ast::PrimOp::IfZ), Expr::nat(5)),
+                Expr::nat(1),
+            ),
+            Expr::nat(2),
+        );
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::nat(2));
+    }
+
+    #[test]
+    fn factorial_via_fix_and_primitives() {
+        // fact = fix (\rec. \n. ifz n 1 (mul n (rec (pred n))))
+        use crate::ast::PrimOp::*;
+        let body = Expr::abs(
+            "rec",
+            Expr::abs(
+                "n",
+                Expr::app(
+                    Expr::app(
+                        Expr::app(Expr::prim(IfZ), Expr::var("n")),
+                        Expr::nat(1),
+                    ),
+                    Expr::app(
+                        Expr::app(Expr::prim(Mul), Expr::var("n")),
+                        Expr::app(
+                            Expr::var("rec"),
+                            Expr::app(Expr::prim(Pred), Expr::var("n")),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        let fact = Expr::fix(body);
+        let e = Expr::app(fact, Expr::nat(5));
+        let nf = normalize(&e, 100_000).unwrap();
+        assert_eq!(nf, Expr::nat(120));
+    }
+
     #[test]
     fn fix_const_normal_forms_to_const_application() {
         // fix (\rec. \n. n) — body ignores rec; applied to anything, returns it.
