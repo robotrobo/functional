@@ -120,6 +120,27 @@ pub fn infer_expr(env: &TypeEnv, e: &Expr, fresh: &mut Fresh) -> Result<(Subst, 
             let result_ty = composed.apply(&alpha);
             Ok((composed, result_ty))
         }
+        Expr::NatLit(_) => Ok((Subst::empty(), Type::Nat)),
+        Expr::Prim(op) => Ok((Subst::empty(), instantiate_prim(*op, fresh))),
+    }
+}
+
+/// Return the monotype of a primitive at this use site. Arithmetic ops
+/// are monomorphic. `IfZ` is polymorphic in its branches — we instantiate
+/// it with a fresh tvar so each use can specialize independently.
+fn instantiate_prim(op: crate::ast::PrimOp, fresh: &mut Fresh) -> Type {
+    use crate::ast::PrimOp::*;
+    let nat = Type::Nat;
+    match op {
+        Succ | Pred => Type::arrow(nat.clone(), nat),
+        Add | Sub | Mul => Type::arrow(nat.clone(), Type::arrow(nat.clone(), nat)),
+        IfZ => {
+            let a = fresh.tvar();
+            Type::arrow(
+                Type::Nat,
+                Type::arrow(a.clone(), Type::arrow(a.clone(), a)),
+            )
+        }
     }
 }
 

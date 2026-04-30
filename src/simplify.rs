@@ -43,12 +43,13 @@ fn occurs(e: &Expr, x: &str) -> Occ {
             Occ::Zero => Occ::Zero,
             _ => Occ::Many,
         },
+        Expr::NatLit(_) | Expr::Prim(_) => Occ::Zero,
     }
 }
 
 fn step(e: &Expr) -> Expr {
     match e {
-        Expr::Var(_) => e.clone(),
+        Expr::Var(_) | Expr::NatLit(_) | Expr::Prim(_) => e.clone(),
         Expr::Abs(param, body) => {
             let body = step(body);
             if let Expr::App(f, arg) = &body {

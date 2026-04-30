@@ -4,6 +4,39 @@ pub enum Expr {
     Abs(String, Box<Expr>),
     App(Box<Expr>, Box<Expr>),
     Fix(Box<Expr>),
+    NatLit(u64),
+    Prim(PrimOp),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrimOp {
+    Succ,
+    Pred,
+    Add,
+    Sub,
+    Mul,
+    IfZ,
+}
+
+impl PrimOp {
+    pub fn arity(&self) -> usize {
+        match self {
+            PrimOp::Succ | PrimOp::Pred => 1,
+            PrimOp::Add | PrimOp::Sub | PrimOp::Mul => 2,
+            PrimOp::IfZ => 3,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            PrimOp::Succ => "succ",
+            PrimOp::Pred => "pred",
+            PrimOp::Add => "add",
+            PrimOp::Sub => "sub",
+            PrimOp::Mul => "mul",
+            PrimOp::IfZ => "ifz",
+        }
+    }
 }
 
 impl Expr {
@@ -21,6 +54,14 @@ impl Expr {
 
     pub fn fix(e: Expr) -> Self {
         Expr::Fix(Box::new(e))
+    }
+
+    pub fn nat(n: u64) -> Self {
+        Expr::NatLit(n)
+    }
+
+    pub fn prim(op: PrimOp) -> Self {
+        Expr::Prim(op)
     }
 }
 

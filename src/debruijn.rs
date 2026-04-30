@@ -188,6 +188,13 @@ pub fn to_db(e: &Expr) -> DBExpr {
             }
             Expr::App(f, x) => DBExpr::app(go(f, env), go(x, env)),
             Expr::Fix(inner) => DBExpr::fix(go(inner, env)),
+            // T3 will add DBExpr::NatLit / DBExpr::Prim variants and
+            // forward properly. Until then, panic if a primitive AST node
+            // ever reaches the de Bruijn engine — it can't, because no
+            // surface syntax produces them yet.
+            Expr::NatLit(_) | Expr::Prim(_) => {
+                unreachable!("primitive AST nodes not yet supported in to_db (added in T3)")
+            }
         }
     }
     go(e, &mut Vec::new())

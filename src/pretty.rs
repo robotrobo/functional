@@ -164,6 +164,8 @@ fn print_expr(e: &Expr) -> String {
             };
             format!("fix {}", inner_str)
         }
+        Expr::NatLit(n) => n.to_string(),
+        Expr::Prim(op) => op.name().to_string(),
     }
 }
 
