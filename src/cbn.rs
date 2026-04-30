@@ -258,9 +258,8 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                             Frame::Update(_) => {}
                         }
                     }
-                    return Ok(Value::Neu {
-                        head_level: 0,
-                        head_name: op.name().to_string(),
+                    return Ok(Value::StuckApp {
+                        head: DBExpr::Prim(op),
                         args,
                     });
                 }
