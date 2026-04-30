@@ -67,7 +67,10 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
         )
         .collect::<String>()
         .try_map(|s, span| {
-            if matches!(s.as_str(), "def" | "let" | "in" | "fix") {
+            if matches!(
+                s.as_str(),
+                "def" | "let" | "in" | "fix" | "succ" | "pred" | "add" | "sub" | "mul" | "ifz"
+            ) {
                 Err(Simple::custom(span, format!("unexpected keyword `{s}`")))
             } else {
                 Ok(s)
@@ -158,7 +161,20 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                 .map(Expr::fix)
         });
 
-        let atom = choice((fix_atom, let_in, lambda, parens, numeral, var));
+        // Each primitive name parses as Expr::Prim(...). They're reserved
+        // by `ident()`, so they cannot be shadowed by lambda binders or
+        // `def`s.
+        let prim_atom = choice((
+            text::keyword("succ").to(Expr::prim(crate::ast::PrimOp::Succ)),
+            text::keyword("pred").to(Expr::prim(crate::ast::PrimOp::Pred)),
+            text::keyword("add").to(Expr::prim(crate::ast::PrimOp::Add)),
+            text::keyword("sub").to(Expr::prim(crate::ast::PrimOp::Sub)),
+            text::keyword("mul").to(Expr::prim(crate::ast::PrimOp::Mul)),
+            text::keyword("ifz").to(Expr::prim(crate::ast::PrimOp::IfZ)),
+        ))
+        .then_ignore(hws());
+
+        let atom = choice((fix_atom, let_in, lambda, parens, prim_atom, numeral, var));
 
         atom.repeated()
             .at_least(1)
@@ -339,12 +355,13 @@ mod tests {
 
     #[test]
     fn parse_numeric_literal_in_application() {
-        // `add 1 2` — the parser should accept literals as atoms in
-        // application juxtaposition.
+        // `add 1 2` — primitive `add` applied to two numeric literals.
+        // The literal shape (still Church until T8) is checked via the
+        // recursive parse so this stays correct across T8.
         assert_eq!(
             parse_expr("add 1 2").unwrap(),
             Expr::app(
-                Expr::app(Expr::var("add"), parse_expr("1").unwrap()),
+                Expr::app(Expr::prim(crate::ast::PrimOp::Add), parse_expr("1").unwrap()),
                 parse_expr("2").unwrap(),
             ),
         );
@@ -460,6 +477,31 @@ mod tests {
     fn fix_is_reserved_identifier() {
         // \fix. fix should fail — fix is reserved.
         assert!(parse_expr("\\fix. fix").is_err());
+    }
+
+    #[test]
+    fn parse_succ_keyword() {
+        assert_eq!(
+            parse_expr("succ").unwrap(),
+            Expr::prim(crate::ast::PrimOp::Succ),
+        );
+    }
+
+    #[test]
+    fn parse_add_application_with_vars() {
+        // add x y — primitive applied to two variables.
+        assert_eq!(
+            parse_expr("add x y").unwrap(),
+            Expr::app(
+                Expr::app(Expr::prim(crate::ast::PrimOp::Add), Expr::var("x")),
+                Expr::var("y"),
+            ),
+        );
+    }
+
+    #[test]
+    fn primitive_name_cannot_be_a_binder() {
+        assert!(parse_expr("\\add. add").is_err());
     }
 
     #[test]
