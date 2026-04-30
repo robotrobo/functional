@@ -152,6 +152,13 @@ pub enum Value {
     },
     /// A natural number literal — primitive WHNF value.
     Nat(u64),
+    /// A primitive operator applied to args that couldn't all reduce to
+    /// `Nat` — typically because one is a bound parameter under a binder.
+    /// Reifies as `Prim(op) <arg0> <arg1> ...` in NF.
+    StuckPrim {
+        op: crate::ast::PrimOp,
+        args: Vec<(DBExpr, Env)>,
+    },
 }
 
 /// A frame on the Krivine work-stack.
@@ -271,46 +278,52 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                     }
                 }
                 use crate::ast::PrimOp::*;
-                match op {
-                    Succ => {
-                        let n = force_nat(&popped[0].0, &popped[0].1, budget)?;
-                        focus = DBExpr::NatLit(n.saturating_add(1));
-                        env = empty_env();
+                let result: Option<(DBExpr, Env)> = match op {
+                    Succ => match try_force_nat(&popped[0].0, &popped[0].1, budget)? {
+                        Some(n) => Some((DBExpr::NatLit(n.saturating_add(1)), empty_env())),
+                        None => None,
+                    },
+                    Pred => match try_force_nat(&popped[0].0, &popped[0].1, budget)? {
+                        Some(n) => Some((
+                            DBExpr::NatLit(if n == 0 { 0 } else { n - 1 }),
+                            empty_env(),
+                        )),
+                        None => None,
+                    },
+                    Add => match (
+                        try_force_nat(&popped[0].0, &popped[0].1, budget)?,
+                        try_force_nat(&popped[1].0, &popped[1].1, budget)?,
+                    ) {
+                        (Some(a), Some(b)) => Some((DBExpr::NatLit(a.saturating_add(b)), empty_env())),
+                        _ => None,
+                    },
+                    Sub => match (
+                        try_force_nat(&popped[0].0, &popped[0].1, budget)?,
+                        try_force_nat(&popped[1].0, &popped[1].1, budget)?,
+                    ) {
+                        (Some(a), Some(b)) => Some((DBExpr::NatLit(a.saturating_sub(b)), empty_env())),
+                        _ => None,
+                    },
+                    Mul => match (
+                        try_force_nat(&popped[0].0, &popped[0].1, budget)?,
+                        try_force_nat(&popped[1].0, &popped[1].1, budget)?,
+                    ) {
+                        (Some(a), Some(b)) => Some((DBExpr::NatLit(a.saturating_mul(b)), empty_env())),
+                        _ => None,
+                    },
+                    IfZ => match try_force_nat(&popped[0].0, &popped[0].1, budget)? {
+                        Some(0) => Some(popped[1].clone()),
+                        Some(_) => Some(popped[2].clone()),
+                        None => None,
+                    },
+                };
+                match result {
+                    Some((next_focus, next_env)) => {
+                        focus = next_focus;
+                        env = next_env;
                     }
-                    Pred => {
-                        let n = force_nat(&popped[0].0, &popped[0].1, budget)?;
-                        focus = DBExpr::NatLit(if n == 0 { 0 } else { n - 1 });
-                        env = empty_env();
-                    }
-                    Add => {
-                        let a = force_nat(&popped[0].0, &popped[0].1, budget)?;
-                        let b = force_nat(&popped[1].0, &popped[1].1, budget)?;
-                        focus = DBExpr::NatLit(a.saturating_add(b));
-                        env = empty_env();
-                    }
-                    Sub => {
-                        let a = force_nat(&popped[0].0, &popped[0].1, budget)?;
-                        let b = force_nat(&popped[1].0, &popped[1].1, budget)?;
-                        focus = DBExpr::NatLit(a.saturating_sub(b));
-                        env = empty_env();
-                    }
-                    Mul => {
-                        let a = force_nat(&popped[0].0, &popped[0].1, budget)?;
-                        let b = force_nat(&popped[1].0, &popped[1].1, budget)?;
-                        focus = DBExpr::NatLit(a.saturating_mul(b));
-                        env = empty_env();
-                    }
-                    IfZ => {
-                        let n = force_nat(&popped[0].0, &popped[0].1, budget)?;
-                        let (then_t, then_e) = popped[1].clone();
-                        let (else_t, else_e) = popped[2].clone();
-                        if n == 0 {
-                            focus = then_t;
-                            env = then_e;
-                        } else {
-                            focus = else_t;
-                            env = else_e;
-                        }
+                    None => {
+                        return Ok(Value::StuckPrim { op, args: popped });
                     }
                 }
                 // continue the outer `loop` with the new focus/env.
@@ -349,7 +362,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                                     thunk: RefCell::new(Thunk::ForcedNat(n)),
                                     tail: closure.env.clone(),
                                 }),
-                                Value::Neu { .. } => {
+                                Value::Neu { .. } | Value::StuckPrim { .. } => {
                                     EnvNode::pending(arg_term, arg_env, closure.env.clone())
                                 }
                             };
@@ -456,6 +469,9 @@ pub fn nf(
         /// `done` already has `k` args; pop them, build the neutral
         /// `Var(depth - 1 - head_level) <args>`.
         BuildNeutral { head_level: usize, k: usize, depth: usize },
+        /// `done` already has `k` args; pop them, build the App spine
+        /// `Prim(op) <arg0> <arg1> ...`.
+        BuildPrim { op: crate::ast::PrimOp, k: usize },
     }
 
     let mut work: Vec<Step> = vec![Step::Process(term.clone(), env.clone(), depth)];
@@ -486,6 +502,13 @@ pub fn nf(
                 Value::Nat(n) => {
                     done.push(DBExpr::NatLit(n));
                 }
+                Value::StuckPrim { op, args } => {
+                    let k = args.len();
+                    work.push(Step::BuildPrim { op, k });
+                    for (a_term, a_env) in args.into_iter().rev() {
+                        work.push(Step::Process(a_term, a_env, depth));
+                    }
+                }
             },
             Step::BuildAbs(name) => {
                 let body_nf = done.pop().expect("nf: BuildAbs missing body");
@@ -503,6 +526,18 @@ pub fn nf(
                 }
                 done.push(result);
             }
+            Step::BuildPrim { op, k } => {
+                let mut args: Vec<DBExpr> = Vec::with_capacity(k);
+                for _ in 0..k {
+                    args.push(done.pop().expect("nf: BuildPrim missing arg"));
+                }
+                args.reverse();
+                let mut result = DBExpr::Prim(op);
+                for a in args {
+                    result = DBExpr::app(result, a);
+                }
+                done.push(result);
+            }
         }
     }
 
@@ -510,15 +545,24 @@ pub fn nf(
     Ok(done.pop().unwrap())
 }
 
-/// Force a thunk and require the result to be a `Nat`. Returns its value.
-/// On a non-Nat value, panics — well-typed code never reaches this path.
-/// In advisory mode (ill-typed code allowed to run), passing a non-Nat to
-/// a numeric primitive is an unrecoverable runtime error.
-fn force_nat(t: &DBExpr, env: &Env, budget: &mut Budget) -> Result<u64, EvalError> {
+/// Force a thunk to WHNF and check whether it's a `Nat`. Returns
+/// `Ok(Some(n))` for a Nat value, `Ok(None)` for anything else (a stuck
+/// neutral or — only in ill-typed code — a closure). The caller surfaces
+/// `None` as a stuck primitive application.
+///
+/// `None` is the normal outcome when reducing primitive code under a
+/// binder during full-NF traversal: a bound parameter reifies as a
+/// neutral, not a Nat, so the surrounding primitive can't compute and
+/// must be reified too.
+fn try_force_nat(
+    t: &DBExpr,
+    env: &Env,
+    budget: &mut Budget,
+) -> Result<Option<u64>, EvalError> {
     let v = whnf(t, env, budget)?;
     match v {
-        Value::Nat(n) => Ok(n),
-        other => panic!("primitive expected Nat, got {:?}", other),
+        Value::Nat(n) => Ok(Some(n)),
+        Value::Neu { .. } | Value::Cls(_) | Value::StuckPrim { .. } => Ok(None),
     }
 }
 
@@ -570,6 +614,9 @@ mod tests {
             Value::Cls(c) => c,
             Value::Neu { .. } => panic!("expected closure, got neutral"),
             Value::Nat(n) => panic!("expected closure, got Nat({})", n),
+            Value::StuckPrim { op, .. } => {
+                panic!("expected closure, got stuck primitive {}", op.name())
+            }
         }
     }
 
