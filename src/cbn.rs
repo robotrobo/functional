@@ -152,11 +152,16 @@ pub enum Value {
     },
     /// A natural number literal — primitive WHNF value.
     Nat(u64),
-    /// A primitive operator applied to args that couldn't all reduce to
-    /// `Nat` — typically because one is a bound parameter under a binder.
-    /// Reifies as `Prim(op) <arg0> <arg1> ...` in NF.
-    StuckPrim {
-        op: crate::ast::PrimOp,
+    /// A non-function value (a primitive operator, a `NatLit`, ...) applied
+    /// to one or more arguments that the runtime cannot reduce. Two
+    /// situations produce this:
+    ///   1. A primitive whose arg(s) are stuck under a binder during
+    ///      full-NF traversal (e.g. `\x. add x x`).
+    ///   2. A type-incorrect program in advisory mode (e.g. `2 3` —
+    ///      applying a `NatLit` to anything).
+    /// Reifies as `head <arg0> <arg1> ...` in NF.
+    StuckApp {
+        head: DBExpr,
         args: Vec<(DBExpr, Env)>,
     },
 }
@@ -210,17 +215,15 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
             DBExpr::NatLit(n) => {
                 // A literal is WHNF. Process the stack: fire any Update
                 // frames (memoize the Nat), then if any args remain on the
-                // stack the user has passed args to a non-function — surface
-                // as a stuck neutral.
+                // stack the user has applied a Nat to something — surface
+                // as a stuck application so the caller sees the term
+                // rather than crashing.
                 loop {
                     match stack.pop() {
                         Some(Frame::Update(node)) => {
                             *node.thunk.borrow_mut() = Thunk::ForcedNat(n);
                         }
                         Some(Frame::Arg(t, e)) | Some(Frame::StrictArg(t, e)) => {
-                            // Apply a Nat to something — runtime type error.
-                            // Surface as neutral so the caller sees the
-                            // stuck term rather than crashing.
                             let mut args = vec![(t, e)];
                             while let Some(fr) = stack.pop() {
                                 match fr {
@@ -228,9 +231,8 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                                     Frame::Update(_) => {}
                                 }
                             }
-                            return Ok(Value::Neu {
-                                head_level: 0,
-                                head_name: format!("{}", n),
+                            return Ok(Value::StuckApp {
+                                head: DBExpr::NatLit(n),
                                 args,
                             });
                         }
@@ -323,7 +325,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         env = next_env;
                     }
                     None => {
-                        return Ok(Value::StuckPrim { op, args: popped });
+                        return Ok(Value::StuckApp {
+                            head: DBExpr::Prim(op),
+                            args: popped,
+                        });
                     }
                 }
                 // continue the outer `loop` with the new focus/env.
@@ -362,7 +367,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                                     thunk: RefCell::new(Thunk::ForcedNat(n)),
                                     tail: closure.env.clone(),
                                 }),
-                                Value::Neu { .. } | Value::StuckPrim { .. } => {
+                                Value::Neu { .. } | Value::StuckApp { .. } => {
                                     EnvNode::pending(arg_term, arg_env, closure.env.clone())
                                 }
                             };
@@ -470,8 +475,8 @@ pub fn nf(
         /// `Var(depth - 1 - head_level) <args>`.
         BuildNeutral { head_level: usize, k: usize, depth: usize },
         /// `done` already has `k` args; pop them, build the App spine
-        /// `Prim(op) <arg0> <arg1> ...`.
-        BuildPrim { op: crate::ast::PrimOp, k: usize },
+        /// `head <arg0> <arg1> ...` for a stuck non-function head.
+        BuildStuckApp { head: DBExpr, k: usize },
     }
 
     let mut work: Vec<Step> = vec![Step::Process(term.clone(), env.clone(), depth)];
@@ -502,9 +507,9 @@ pub fn nf(
                 Value::Nat(n) => {
                     done.push(DBExpr::NatLit(n));
                 }
-                Value::StuckPrim { op, args } => {
+                Value::StuckApp { head, args } => {
                     let k = args.len();
-                    work.push(Step::BuildPrim { op, k });
+                    work.push(Step::BuildStuckApp { head, k });
                     for (a_term, a_env) in args.into_iter().rev() {
                         work.push(Step::Process(a_term, a_env, depth));
                     }
@@ -526,13 +531,13 @@ pub fn nf(
                 }
                 done.push(result);
             }
-            Step::BuildPrim { op, k } => {
+            Step::BuildStuckApp { head, k } => {
                 let mut args: Vec<DBExpr> = Vec::with_capacity(k);
                 for _ in 0..k {
-                    args.push(done.pop().expect("nf: BuildPrim missing arg"));
+                    args.push(done.pop().expect("nf: BuildStuckApp missing arg"));
                 }
                 args.reverse();
-                let mut result = DBExpr::Prim(op);
+                let mut result = head;
                 for a in args {
                     result = DBExpr::app(result, a);
                 }
@@ -562,7 +567,7 @@ fn try_force_nat(
     let v = whnf(t, env, budget)?;
     match v {
         Value::Nat(n) => Ok(Some(n)),
-        Value::Neu { .. } | Value::Cls(_) | Value::StuckPrim { .. } => Ok(None),
+        Value::Neu { .. } | Value::Cls(_) | Value::StuckApp { .. } => Ok(None),
     }
 }
 
@@ -614,9 +619,7 @@ mod tests {
             Value::Cls(c) => c,
             Value::Neu { .. } => panic!("expected closure, got neutral"),
             Value::Nat(n) => panic!("expected closure, got Nat({})", n),
-            Value::StuckPrim { op, .. } => {
-                panic!("expected closure, got stuck primitive {}", op.name())
-            }
+            Value::StuckApp { .. } => panic!("expected closure, got stuck application"),
         }
     }
 
