@@ -37,6 +37,12 @@ fn occurs(e: &Expr, x: &str) -> Occ {
             }
         }
         Expr::App(f, a) => occurs(f, x).join(occurs(a, x)),
+        // fix unfolds repeatedly: a single occurrence inside is reached on
+        // every unfold, so cap to Many.
+        Expr::Fix(inner) => match occurs(inner, x) {
+            Occ::Zero => Occ::Zero,
+            _ => Occ::Many,
+        },
     }
 }
 
@@ -70,6 +76,7 @@ fn step(e: &Expr) -> Expr {
             }
             Expr::app(f, a)
         }
+        Expr::Fix(inner) => Expr::fix(step(inner)),
     }
 }
 

@@ -34,6 +34,10 @@ pub enum DBExpr {
     /// where strictness analysis proves the binder will be forced.
     /// Semantically equivalent to `App`; differs only in evaluation order.
     StrictApp(Rc<DBExpr>, Rc<DBExpr>),
+    /// Fixed-point primitive. `fix e` evaluates to `e (fix e)`. Unfolded
+    /// by `cbn::whnf` when focused. Carries no binder of its own, so de
+    /// Bruijn indices in `e` are not shifted by it.
+    Fix(Rc<DBExpr>),
 }
 
 impl PartialEq for DBExpr {
@@ -47,6 +51,7 @@ impl PartialEq for DBExpr {
             (DBExpr::StrictApp(f1, x1), DBExpr::StrictApp(f2, x2)) => f1 == f2 && x1 == x2,
             (DBExpr::App(f1, x1), DBExpr::StrictApp(f2, x2))
             | (DBExpr::StrictApp(f1, x1), DBExpr::App(f2, x2)) => f1 == f2 && x1 == x2,
+            (DBExpr::Fix(a), DBExpr::Fix(b)) => a == b,
             _ => false,
         }
     }
@@ -65,6 +70,9 @@ impl DBExpr {
     }
     pub fn strict_app(f: DBExpr, x: DBExpr) -> Self {
         DBExpr::StrictApp(Rc::new(f), Rc::new(x))
+    }
+    pub fn fix(e: DBExpr) -> Self {
+        DBExpr::Fix(Rc::new(e))
     }
 }
 
@@ -96,6 +104,7 @@ pub fn shift(d: i64, cutoff: usize, e: &DBExpr) -> DBExpr {
         DBExpr::StrictApp(f, x) => {
             DBExpr::strict_app(shift(d, cutoff, f), shift(d, cutoff, x))
         }
+        DBExpr::Fix(inner) => DBExpr::fix(shift(d, cutoff, inner)),
     }
 }
 
@@ -122,7 +131,11 @@ pub fn reduce_step(e: &DBExpr) -> Option<DBExpr> {
         DBExpr::Abs(name, body) => {
             reduce_step(body).map(|b| DBExpr::abs(name.clone(), b))
         }
-        _ => None,
+        DBExpr::Fix(inner) => {
+            // fix e ↪ e (fix e). Always reducible at the head.
+            Some(DBExpr::app((**inner).clone(), DBExpr::fix((**inner).clone())))
+        }
+        DBExpr::Var(_) => None,
     }
 }
 
@@ -145,6 +158,7 @@ pub fn subst(k: usize, s: &DBExpr, e: &DBExpr) -> DBExpr {
         DBExpr::StrictApp(f, x) => {
             DBExpr::strict_app(subst(k, s, f), subst(k, s, x))
         }
+        DBExpr::Fix(inner) => DBExpr::fix(subst(k, s, inner)),
     }
 }
 
@@ -173,6 +187,7 @@ pub fn to_db(e: &Expr) -> DBExpr {
                 DBExpr::abs(p.clone(), body_db)
             }
             Expr::App(f, x) => DBExpr::app(go(f, env), go(x, env)),
+            Expr::Fix(inner) => DBExpr::fix(go(inner, env)),
         }
     }
     go(e, &mut Vec::new())
@@ -195,6 +210,7 @@ pub fn to_named(e: &DBExpr) -> Expr {
         Process(&'a DBExpr),
         BuildAbs(String),
         BuildApp,
+        BuildFix,
     }
 
     let mut work: Vec<Step> = vec![Step::Process(e)];
@@ -227,6 +243,10 @@ pub fn to_named(e: &DBExpr) -> Expr {
                     work.push(Step::Process(x));
                     work.push(Step::Process(f));
                 }
+                DBExpr::Fix(inner) => {
+                    work.push(Step::BuildFix);
+                    work.push(Step::Process(inner));
+                }
             },
             Step::BuildAbs(name) => {
                 env.pop();
@@ -239,6 +259,10 @@ pub fn to_named(e: &DBExpr) -> Expr {
                 let x = done.pop().expect("to_named: BuildApp missing x");
                 let f = done.pop().expect("to_named: BuildApp missing f");
                 done.push(Expr::app(f, x));
+            }
+            Step::BuildFix => {
+                let inner = done.pop().expect("to_named: BuildFix missing inner");
+                done.push(Expr::fix(inner));
             }
         }
     }

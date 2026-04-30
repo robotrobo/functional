@@ -72,7 +72,39 @@ fn evaluate(line: &str, env: &mut Vec<Def>) {
             return;
         }
     };
-    // Add new defs to env.
+
+    // Type-check (advisory). Build a temporary Program with the existing
+    // env + newly parsed defs and infer; print types only for the new ones
+    // and for main. Type errors do not block evaluation.
+    let new_count = parsed.defs.len();
+    let program_for_types = Program {
+        defs: env.iter().cloned().chain(parsed.defs.iter().cloned()).collect(),
+        main: parsed.main.clone(),
+    };
+    let types = crate::infer::infer_program(&program_for_types);
+    let new_start = types.defs.len().saturating_sub(new_count);
+    for (name, res) in &types.defs[new_start..] {
+        match res {
+            Ok(scheme) => println!("{} : {}", name, scheme),
+            Err(e) => println!("{} : (type error: {})", name, e),
+        }
+    }
+    if let Some(t_res) = &types.main_type {
+        match t_res {
+            Ok(t) => {
+                let mut vars: Vec<_> = t.ftv().into_iter().collect();
+                vars.sort();
+                let s = crate::types::Scheme {
+                    vars,
+                    ty: t.clone(),
+                };
+                println!(": {}", s);
+            }
+            Err(e) => println!(": (type error: {})", e),
+        }
+    }
+
+    // Add new defs to env (advisory: include ill-typed ones too).
     for d in parsed.defs {
         env.push(d);
     }

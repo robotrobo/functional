@@ -1,0 +1,55 @@
+//! End-to-end: load `lib/prelude.lc`, type-check, and report which defs
+//! HM accepts. This is part regression test, part documentation: the
+//! `print_full_status` test prints a table that captures HM's reach
+//! across the existing prelude.
+
+use std::collections::HashMap;
+use std::fs;
+
+use lc::infer::infer_program;
+use lc::parser::parse_program;
+
+fn typecheck_status() -> Vec<(String, bool)> {
+    let src = fs::read_to_string("lib/prelude.lc").expect("read prelude");
+    let program = parse_program(&src).expect("parse prelude");
+    let types = infer_program(&program);
+    types.defs.into_iter().map(|(n, r)| (n, r.is_ok())).collect()
+}
+
+fn status_map() -> HashMap<String, bool> {
+    typecheck_status().into_iter().collect()
+}
+
+#[test]
+fn id_typechecks() {
+    assert_eq!(status_map().get("id"), Some(&true));
+}
+
+#[test]
+fn const_typechecks() {
+    assert_eq!(status_map().get("const"), Some(&true));
+}
+
+#[test]
+fn compose_typechecks() {
+    assert_eq!(status_map().get("compose"), Some(&true));
+}
+
+#[test]
+fn y_combinator_fails_occurs_check() {
+    // Y is the canonical HM rejection; if this ever flips to true, the
+    // type system has changed in a way that needs review.
+    assert_eq!(
+        status_map().get("Y"),
+        Some(&false),
+        "Y must not typecheck under HM"
+    );
+}
+
+#[test]
+fn print_full_status() {
+    // Diagnostic — always passes. Run with `--nocapture` for the table.
+    for (name, ok) in typecheck_status() {
+        println!("{:>12} : {}", name, if ok { "OK" } else { "TYPE ERROR" });
+    }
+}

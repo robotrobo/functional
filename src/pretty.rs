@@ -148,10 +148,21 @@ fn print_expr(e: &Expr) -> String {
                 _ => print_expr(f),
             };
             let x_str = match **x {
-                Expr::App(_, _) | Expr::Abs(_, _) => format!("({})", print_expr(x)),
+                Expr::App(_, _) | Expr::Abs(_, _) | Expr::Fix(_) => {
+                    format!("({})", print_expr(x))
+                }
                 _ => print_expr(x),
             };
             format!("{} {}", f_str, x_str)
+        }
+        Expr::Fix(inner) => {
+            let inner_str = match **inner {
+                Expr::Abs(_, _) | Expr::App(_, _) | Expr::Fix(_) => {
+                    format!("({})", print_expr(inner))
+                }
+                _ => print_expr(inner),
+            };
+            format!("fix {}", inner_str)
         }
     }
 }

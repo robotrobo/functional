@@ -67,7 +67,7 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
         )
         .collect::<String>()
         .try_map(|s, span| {
-            if matches!(s.as_str(), "def" | "let" | "in") {
+            if matches!(s.as_str(), "def" | "let" | "in" | "fix") {
                 Err(Simple::custom(span, format!("unexpected keyword `{s}`")))
             } else {
                 Ok(s)
@@ -134,7 +134,31 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(expr.clone())
             .map(|((name, e1), e2)| Expr::app(Expr::abs(name, e2), e1));
 
-        let atom = choice((let_in, lambda, parens, numeral, var));
+        // `fix <atom>` — binds tighter than juxtaposition, so `fix f x`
+        // parses as `(fix f) x`. The argument is a single atom (paren'd
+        // expr, lambda, numeral, var, or another `fix`).
+        let fix_atom = recursive(|fix_atom| {
+            let inner_lambda = just('\\')
+                .then_ignore(hws())
+                .ignore_then(ident())
+                .then_ignore(just('.'))
+                .then_ignore(hws())
+                .then(expr.clone())
+                .map(|(p, b)| Expr::abs(p, b));
+            let inner_parens = just('(')
+                .then_ignore(hws())
+                .ignore_then(expr.clone())
+                .then_ignore(just(')'))
+                .then_ignore(hws());
+            let inner_var = ident().map(Expr::Var);
+
+            text::keyword("fix")
+                .then_ignore(hws())
+                .ignore_then(choice((inner_parens, inner_lambda, fix_atom, inner_var)))
+                .map(Expr::fix)
+        });
+
+        let atom = choice((fix_atom, let_in, lambda, parens, numeral, var));
 
         atom.repeated()
             .at_least(1)
@@ -412,6 +436,30 @@ mod tests {
                 Expr::var("y"),
             )
         );
+    }
+
+    #[test]
+    fn parse_fix_simple() {
+        // fix (\x. x)
+        assert_eq!(
+            parse_expr("fix (\\x. x)").unwrap(),
+            Expr::fix(Expr::abs("x", Expr::var("x"))),
+        );
+    }
+
+    #[test]
+    fn parse_fix_in_application() {
+        // `fix f x` — fix binds tighter than juxtaposition.
+        assert_eq!(
+            parse_expr("fix f x").unwrap(),
+            Expr::app(Expr::fix(Expr::var("f")), Expr::var("x")),
+        );
+    }
+
+    #[test]
+    fn fix_is_reserved_identifier() {
+        // \fix. fix should fail — fix is reserved.
+        assert!(parse_expr("\\fix. fix").is_err());
     }
 
     #[test]
