@@ -476,4 +476,29 @@ mod tests {
             &Expr::abs("x", Expr::var("z")),
         ));
     }
+
+    // ---- Fix evaluator semantics ----
+
+    #[test]
+    fn fix_id_unfolds_once() {
+        // fix (\x. x) → (\x. x) (fix (\x. x))
+        let e = Expr::fix(Expr::abs("x", Expr::var("x")));
+        let stepped = reduce_step(&e).unwrap();
+        let expected = Expr::app(
+            Expr::abs("x", Expr::var("x")),
+            Expr::fix(Expr::abs("x", Expr::var("x"))),
+        );
+        assert_eq!(stepped, expected);
+    }
+
+    #[test]
+    fn fix_const_normal_forms_to_const_application() {
+        // fix (\rec. \n. n) — body ignores rec; applied to anything, returns it.
+        // Apply to Church 0 and check result alpha-equal to 0.
+        let zero = Expr::abs("f", Expr::abs("x", Expr::var("x")));
+        let f = Expr::fix(Expr::abs("rec", Expr::abs("n", Expr::var("n"))));
+        let applied = Expr::app(f, zero.clone());
+        let nf = normalize(&applied, 200).unwrap();
+        assert!(alpha_eq(&nf, &zero), "got {:?}", nf);
+    }
 }
