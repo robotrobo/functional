@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::Expr;
+use crate::ast::{Expr, Program};
 use crate::type_error::TypeError;
 use crate::types::{unify, Scheme, Subst, TVarId, Type};
 
@@ -112,6 +112,44 @@ pub fn infer_expr(env: &TypeEnv, e: &Expr, fresh: &mut Fresh) -> Result<(Subst, 
             Ok((composed, result_ty))
         }
     }
+}
+
+/// Per-def scheme plus the optional main expression's monotype.
+#[derive(Debug, Default)]
+pub struct ProgramTypes {
+    pub defs: Vec<(String, Result<Scheme, TypeError>)>,
+    pub main_type: Option<Result<Type, TypeError>>,
+}
+
+/// Type-check a program in advisory mode: each def is inferred independently.
+/// A def that fails is recorded as an Err and excluded from the environment
+/// for subsequent defs/main — references to its name will produce
+/// `UnboundVar` later. Main is checked last.
+pub fn infer_program(p: &Program) -> ProgramTypes {
+    let mut env = TypeEnv::empty();
+    let mut fresh = Fresh::new();
+    let mut out = ProgramTypes::default();
+
+    for d in &p.defs {
+        match infer_expr(&env, &d.body, &mut fresh) {
+            Ok((s, t)) => {
+                let env_after = env.apply_subst(&s);
+                let scheme = generalize(&env_after, s.apply(&t));
+                env = env_after.insert(d.name.clone(), scheme.clone());
+                out.defs.push((d.name.clone(), Ok(scheme)));
+            }
+            Err(e) => {
+                out.defs.push((d.name.clone(), Err(e)));
+            }
+        }
+    }
+
+    if let Some(main) = &p.main {
+        let r = infer_expr(&env, main, &mut fresh).map(|(s, t)| s.apply(&t));
+        out.main_type = Some(r);
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -250,5 +288,49 @@ mod infer_expr_tests {
         let e = Expr::abs("x", Expr::app(Expr::var("x"), Expr::var("x")));
         let err = infer(&e).unwrap_err();
         assert!(matches!(err, TypeError::OccursCheck(..)));
+    }
+}
+
+#[cfg(test)]
+mod program_tests {
+    use super::*;
+    use crate::ast::{Def, Expr, Program};
+
+    #[test]
+    fn def_uses_polymorphic_id_at_two_types() {
+        // def id = \x. x ; main = id (\y. y)
+        let p = Program {
+            defs: vec![Def {
+                name: "id".into(),
+                body: Expr::abs("x", Expr::var("x")),
+            }],
+            main: Some(Expr::app(Expr::var("id"), Expr::abs("y", Expr::var("y")))),
+        };
+        let types = infer_program(&p);
+        assert!(types.defs[0].1.is_ok(), "id should typecheck");
+        assert!(
+            types.main_type.unwrap().is_ok(),
+            "main should typecheck"
+        );
+    }
+
+    #[test]
+    fn ill_typed_def_is_recorded_but_does_not_abort() {
+        let p = Program {
+            defs: vec![
+                Def {
+                    name: "bad".into(),
+                    body: Expr::abs("x", Expr::app(Expr::var("x"), Expr::var("x"))),
+                },
+                Def {
+                    name: "good".into(),
+                    body: Expr::abs("x", Expr::var("x")),
+                },
+            ],
+            main: None,
+        };
+        let types = infer_program(&p);
+        assert!(types.defs[0].1.is_err(), "bad should fail");
+        assert!(types.defs[1].1.is_ok(), "good should still succeed");
     }
 }
