@@ -80,7 +80,7 @@ impl fmt::Display for Scheme {
     }
 }
 
-fn letter_for_index(i: usize) -> String {
+pub fn letter_for_index(i: usize) -> String {
     // 0→"a" .. 25→"z" .. 26→"aa" .. 27→"ab" ...
     let mut out = String::new();
     let mut n = i;
