@@ -1,15 +1,3 @@
-def true    = \a. \b. a
-def false   = \a. \b. b
-def zero    = \f. \x. x
-def one     = \f. \x. f x
-def succ    = \n. \f. \x. f (n f x)
-def add     = \m. \n. \f. \x. m f (n f x)
-def mul     = \m. \n. \f. m (n f)
-def is_zero = \n. n (\a. false) true
-def pair    = \a. \b. \s. s a b
-def fst     = \p. p (\a. \b. a)
-def snd     = \p. p (\a. \b. b)
-def pred    = \n. fst (n (\p. pair (snd p) (succ (snd p))) (pair zero zero))
-def Y       = \f. (\x. f (x x)) (\x. f (x x))
-def fact    = Y (\fact. \n. is_zero n one (mul n (fact (pred n))))
-fact (succ (succ (succ zero)))
+-- Factorial of 3 using primitive Nat operators and `fix` for typed recursion.
+def fact = fix (\rec. \n. ifz n 1 (mul n (rec (pred n))))
+fact 3

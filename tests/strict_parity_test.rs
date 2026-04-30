@@ -39,45 +39,45 @@ fn check(src: &str) {
 
 #[test]
 fn parity_add() {
-    check("add one two");
+    check("add 1 2");
 }
 
 #[test]
 fn parity_mul() {
-    check("mul two three");
+    check("mul 2 3");
 }
 
 #[test]
 fn parity_fact_three() {
-    check("fact three");
+    check("fact 3");
 }
 
 #[test]
 fn parity_pred_three() {
-    check("pred three");
+    check("pred 3");
 }
 
 #[test]
 fn parity_list_length() {
-    check("length (cons one (cons two (cons three nil)))");
+    check("length (cons 1 (cons 2 (cons 3 nil)))");
 }
 
 #[test]
 fn parity_map_succ() {
-    check("length (map succ (cons one (cons two nil)))");
+    check("length (map succ (cons 1 (cons 2 nil)))");
 }
 
 #[test]
 fn parity_compose() {
-    check("compose succ succ one");
+    check("compose succ succ 1");
 }
 
 #[test]
 fn parity_if_true() {
-    check("if true one two");
+    check("if true 1 2");
 }
 
 #[test]
 fn parity_if_false() {
-    check("if false one two");
+    check("if false 1 2");
 }

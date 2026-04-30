@@ -17,18 +17,18 @@ fn run_with_prelude(user_src: &str) -> String {
 
 #[test]
 fn add_one_two_is_three() {
-    assert_eq!(run_with_prelude("add one two"), "3");
+    assert_eq!(run_with_prelude("add 1 2"), "3");
 }
 
 #[test]
 fn fact_three_via_prelude() {
-    assert_eq!(run_with_prelude("fact three"), "6");
+    assert_eq!(run_with_prelude("fact 3"), "6");
 }
 
 #[test]
 fn list_length_three() {
     assert_eq!(
-        run_with_prelude("length (cons one (cons two (cons three nil)))"),
+        run_with_prelude("length (cons 1 (cons 2 (cons 3 nil)))"),
         "3",
     );
 }
@@ -55,11 +55,8 @@ fn literal_factorial() {
     assert_eq!(run_with_prelude("fact 5"), "120");
 }
 
-#[test]
-fn literal_and_named_numeral_agree() {
-    // 3 (literal) should reduce to the same value as `three` (prelude def).
-    assert_eq!(run_with_prelude("3"), run_with_prelude("three"));
-}
+// `three` (named Church-encoded numeral) was removed when the prelude
+// migrated to primitive Nat. The literal `3` now stands alone.
 
 // -------- let bindings (parse-time desugar to App-Abs) --------
 

@@ -1,2 +1,2 @@
--- numeric literals desugar to Church numerals at parse time
+-- numeric literals are primitive Nat values
 fact 5

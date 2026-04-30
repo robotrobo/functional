@@ -2,14 +2,14 @@
 //!
 //! Each test prepends the prelude to a small main expression, runs it
 //! through the full pipeline (parse → inline_defs → normalize), and
-//! asserts the normal form matches the expected Church-encoded value.
+//! asserts the normal form matches the expected value.
 //!
-//! Tests use the same binder names as the prelude (e.g. `\t. \f. t` for
-//! true) — if you change a binder name in the prelude, the structural
-//! equality check here will fail.
+//! After the Nat migration: numeric values are primitive `Expr::NatLit`,
+//! arithmetic is via the `succ`/`pred`/`add`/`sub`/`mul`/`ifz` keywords.
+//! Booleans, pairs, and lists remain Church-encoded.
 
 use lc::ast::Expr;
-use lc::eval::{alpha_eq, inline_defs, normalize};
+use lc::eval::{inline_defs, normalize};
 use lc::parser::parse_program;
 
 const STEP_LIMIT: usize = 1_000_000;
@@ -34,15 +34,6 @@ fn church_false() -> Expr {
     Expr::abs("t", Expr::abs("f", Expr::var("f")))
 }
 
-fn church_numeral(n: usize) -> Expr {
-    // \f. \x. f^n x
-    let mut body = Expr::var("x");
-    for _ in 0..n {
-        body = Expr::app(Expr::var("f"), body);
-    }
-    Expr::abs("f", Expr::abs("x", body))
-}
-
 fn church_list(items: Vec<Expr>) -> Expr {
     // \c. \n. c item0 (c item1 ... (c itemN n))
     let mut body = Expr::var("n");
@@ -56,27 +47,27 @@ fn church_list(items: Vec<Expr>) -> Expr {
 
 #[test]
 fn id_returns_its_argument() {
-    assert_eq!(evaluate("id zero"), church_numeral(0));
+    assert_eq!(evaluate("id 0"), Expr::nat(0));
 }
 
 #[test]
 fn const_returns_first_argument() {
-    assert_eq!(evaluate("const zero one"), church_numeral(0));
+    assert_eq!(evaluate("const 0 1"), Expr::nat(0));
 }
 
 #[test]
 fn flip_swaps_first_two_arguments() {
-    // flip sub two five  =  sub five two  =  3
-    assert_eq!(evaluate("flip sub two five"), church_numeral(3));
+    // flip sub 2 5  =  sub 5 2  =  3
+    assert_eq!(evaluate("flip sub 2 5"), Expr::nat(3));
 }
 
 #[test]
 fn compose_chains_two_functions() {
-    // compose succ succ zero  =  succ (succ zero)  =  2
-    assert_eq!(evaluate("compose succ succ zero"), church_numeral(2));
+    // compose succ succ 0  =  succ (succ 0)  =  2
+    assert_eq!(evaluate("compose succ succ 0"), Expr::nat(2));
 }
 
-// ---- Tier 2: booleans ----
+// ---- Tier 2: booleans (still Church) ----
 
 #[test]
 fn true_is_first_selector() {
@@ -125,104 +116,103 @@ fn or_false_false_is_false() {
 
 #[test]
 fn if_true_picks_then_branch() {
-    assert_eq!(evaluate("if true zero one"), church_numeral(0));
+    assert_eq!(evaluate("if true 0 1"), Expr::nat(0));
 }
 
 #[test]
 fn if_false_picks_else_branch() {
-    assert_eq!(evaluate("if false zero one"), church_numeral(1));
+    assert_eq!(evaluate("if false 0 1"), Expr::nat(1));
 }
 
-// ---- Tier 3a: numerals ----
+// ---- Tier 3: primitive Nat operators ----
 
 #[test]
-fn zero_is_church_zero() {
-    assert_eq!(evaluate("zero"), church_numeral(0));
+fn nat_zero_literal() {
+    assert_eq!(evaluate("0"), Expr::nat(0));
 }
 
 #[test]
 fn succ_of_zero_is_one() {
-    assert_eq!(evaluate("succ zero"), church_numeral(1));
+    assert_eq!(evaluate("succ 0"), Expr::nat(1));
 }
 
 #[test]
-fn three_is_church_three() {
-    assert_eq!(evaluate("three"), church_numeral(3));
+fn three_literal() {
+    assert_eq!(evaluate("3"), Expr::nat(3));
 }
 
 #[test]
 fn add_two_three_is_five() {
-    assert_eq!(evaluate("add two three"), church_numeral(5));
+    assert_eq!(evaluate("add 2 3"), Expr::nat(5));
 }
 
 #[test]
 fn mul_two_three_is_six() {
-    assert_eq!(evaluate("mul two three"), church_numeral(6));
+    assert_eq!(evaluate("mul 2 3"), Expr::nat(6));
 }
 
 #[test]
-fn pow_two_three_is_eight() {
-    // Result has α-renamed binders (\x. \x'. ...) but is α-equivalent to canonical Church 8.
-    assert!(alpha_eq(&evaluate("pow two three"), &church_numeral(8)));
+fn ifz_zero_is_then_branch() {
+    assert_eq!(evaluate("ifz 0 100 200"), Expr::nat(100));
 }
 
 #[test]
-fn is_zero_of_zero_is_true() {
-    assert_eq!(evaluate("isZero zero"), church_true());
+fn ifz_nonzero_is_else_branch() {
+    assert_eq!(evaluate("ifz 5 100 200"), Expr::nat(200));
 }
 
-#[test]
-fn is_zero_of_one_is_false() {
-    assert_eq!(evaluate("isZero one"), church_false());
-}
-
-// ---- Tier 4: pairs ----
+// ---- Tier 4: pairs (still Church) ----
 
 #[test]
 fn fst_of_pair() {
-    assert_eq!(evaluate("fst (pair zero one)"), church_numeral(0));
+    assert_eq!(evaluate("fst (pair 0 1)"), Expr::nat(0));
 }
 
 #[test]
 fn snd_of_pair() {
-    assert_eq!(evaluate("snd (pair zero one)"), church_numeral(1));
+    assert_eq!(evaluate("snd (pair 0 1)"), Expr::nat(1));
 }
 
-// ---- Tier 3b: pred / sub ----
+// ---- Tier 5: pred / sub ----
 
 #[test]
 fn pred_of_three_is_two() {
-    assert_eq!(evaluate("pred three"), church_numeral(2));
+    assert_eq!(evaluate("pred 3"), Expr::nat(2));
 }
 
 #[test]
 fn pred_of_zero_is_zero() {
-    assert_eq!(evaluate("pred zero"), church_numeral(0));
+    assert_eq!(evaluate("pred 0"), Expr::nat(0));
 }
 
 #[test]
 fn sub_five_two_is_three() {
-    assert_eq!(evaluate("sub five two"), church_numeral(3));
+    assert_eq!(evaluate("sub 5 2"), Expr::nat(3));
 }
 
-// ---- Tier 5: recursion ----
+// ---- Tier 6: recursion via fix ----
 
 #[test]
 fn fact_zero_is_one() {
-    assert_eq!(evaluate("fact zero"), church_numeral(1));
+    assert_eq!(evaluate("fact 0"), Expr::nat(1));
 }
 
 #[test]
 fn fact_one_is_one() {
-    assert_eq!(evaluate("fact one"), church_numeral(1));
+    assert_eq!(evaluate("fact 1"), Expr::nat(1));
 }
 
 #[test]
 fn fact_two_is_two() {
-    assert_eq!(evaluate("fact two"), church_numeral(2));
+    assert_eq!(evaluate("fact 2"), Expr::nat(2));
 }
 
-// ---- Tier 6: lists ----
+#[test]
+fn fact_five_is_120() {
+    assert_eq!(evaluate("fact 5"), Expr::nat(120));
+}
+
+// ---- Tier 7: lists (still Church-encoded) ----
 
 #[test]
 fn is_nil_of_nil_is_true() {
@@ -231,28 +221,28 @@ fn is_nil_of_nil_is_true() {
 
 #[test]
 fn is_nil_of_cons_is_false() {
-    assert_eq!(evaluate("isNil (cons zero nil)"), church_false());
+    assert_eq!(evaluate("isNil (cons 0 nil)"), church_false());
 }
 
 #[test]
 fn length_of_nil_is_zero() {
-    assert_eq!(evaluate("length nil"), church_numeral(0));
+    assert_eq!(evaluate("length nil"), Expr::nat(0));
 }
 
 #[test]
 fn length_of_two_element_list_is_two() {
     assert_eq!(
-        evaluate("length (cons one (cons two nil))"),
-        church_numeral(2),
+        evaluate("length (cons 1 (cons 2 nil))"),
+        Expr::nat(2),
     );
 }
 
 #[test]
 fn foldr_sums_a_list() {
-    // foldr add zero [1, 2, 3]  =  6
+    // foldr add 0 [1, 2, 3]  =  6
     assert_eq!(
-        evaluate("foldr add zero (cons one (cons two (cons three nil)))"),
-        church_numeral(6),
+        evaluate("foldr add 0 (cons 1 (cons 2 (cons 3 nil)))"),
+        Expr::nat(6),
     );
 }
 
@@ -260,17 +250,8 @@ fn foldr_sums_a_list() {
 fn map_succ_increments_each() {
     // map succ [1, 2]  =  [2, 3]
     assert_eq!(
-        evaluate("map succ (cons one (cons two nil))"),
-        church_list(vec![church_numeral(2), church_numeral(3)]),
-    );
-}
-
-#[test]
-fn filter_keeps_matching_elements() {
-    // filter isZero [0, 1, 0]  =  [0, 0]
-    assert_eq!(
-        evaluate("filter isZero (cons zero (cons one (cons zero nil)))"),
-        church_list(vec![church_numeral(0), church_numeral(0)]),
+        evaluate("map succ (cons 1 (cons 2 nil))"),
+        church_list(vec![Expr::nat(2), Expr::nat(3)]),
     );
 }
 
@@ -278,7 +259,7 @@ fn filter_keeps_matching_elements() {
 fn append_concatenates_lists() {
     // append [1] [2]  =  [1, 2]
     assert_eq!(
-        evaluate("append (cons one nil) (cons two nil)"),
-        church_list(vec![church_numeral(1), church_numeral(2)]),
+        evaluate("append (cons 1 nil) (cons 2 nil)"),
+        church_list(vec![Expr::nat(1), Expr::nat(2)]),
     );
 }

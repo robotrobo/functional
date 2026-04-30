@@ -47,6 +47,17 @@ fn y_combinator_fails_occurs_check() {
 }
 
 #[test]
+fn fact_typechecks_under_primitives() {
+    // After Nat migration, fact = fix (\rec. \n. ifz n 1 (mul n (rec (pred n))))
+    // should typecheck cleanly to Nat -> Nat.
+    assert_eq!(
+        status_map().get("fact"),
+        Some(&true),
+        "fact (using fix and primitives) must typecheck",
+    );
+}
+
+#[test]
 fn print_full_status() {
     // Diagnostic — always passes. Run with `--nocapture` for the table.
     for (name, ok) in typecheck_status() {

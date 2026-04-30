@@ -11,18 +11,10 @@ fn evaluate(path: &str) -> Expr {
     normalize(&inlined, STEP_LIMIT).expect("normalize should succeed")
 }
 
-fn church_numeral(n: usize) -> Expr {
-    let mut body = Expr::var("x");
-    for _ in 0..n {
-        body = Expr::app(Expr::var("f"), body);
-    }
-    Expr::abs("f", Expr::abs("x", body))
-}
-
 #[test]
 fn factorial_of_three_is_six() {
     assert_eq!(
         evaluate("examples/factorial/fact_3.lc"),
-        church_numeral(6)
+        Expr::nat(6),
     );
 }
