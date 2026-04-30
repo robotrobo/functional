@@ -298,6 +298,23 @@ mod infer_expr_tests {
         let err = infer(&e).unwrap_err();
         assert!(matches!(err, TypeError::OccursCheck(..)));
     }
+
+    #[test]
+    fn fix_id_has_polymorphic_type() {
+        // fix (\x. x) — well-typed (any type), unlike Y which fails occurs.
+        let e = Expr::fix(Expr::abs("x", Expr::var("x")));
+        let t = infer(&e).unwrap();
+        assert!(matches!(t, Type::Var(_)), "expected fresh tvar, got {:?}", t);
+    }
+
+    #[test]
+    fn fix_arg_must_be_endofunction() {
+        // fix (\x. \y. x) — body is α → β → α; unify with γ → γ forces
+        // γ = β → α and γ = α, which is occurs-check infinite.
+        let e = Expr::fix(Expr::abs("x", Expr::abs("y", Expr::var("x"))));
+        let err = infer(&e);
+        assert!(err.is_err(), "expected type error, got {:?}", err);
+    }
 }
 
 #[cfg(test)]
