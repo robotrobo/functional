@@ -9,6 +9,7 @@ pub type TVarId = u32;
 pub enum Type {
     Var(TVarId),
     Arrow(Box<Type>, Box<Type>),
+    Nat,
 }
 
 impl Type {
@@ -34,6 +35,7 @@ impl Type {
                 a.collect_ftv(out);
                 b.collect_ftv(out);
             }
+            Type::Nat => {}
         }
     }
 }
@@ -65,6 +67,7 @@ impl fmt::Display for Type {
                 };
                 write!(f, "{} -> {}", a_str, b)
             }
+            Type::Nat => write!(f, "Nat"),
         }
     }
 }
@@ -108,6 +111,7 @@ fn pretty_letters(t: &Type, bound: &[TVarId]) -> String {
             };
             format!("{} -> {}", a_str, pretty_letters(b, bound))
         }
+        Type::Nat => "Nat".to_string(),
     }
 }
 
@@ -136,6 +140,7 @@ impl Subst {
                 None => t.clone(),
             },
             Type::Arrow(a, b) => Type::arrow(self.apply(a), self.apply(b)),
+            Type::Nat => Type::Nat,
         }
     }
 
@@ -239,12 +244,14 @@ mod subst_tests {
 pub fn unify(a: &Type, b: &Type) -> Result<Subst, TypeError> {
     match (a, b) {
         (Type::Var(x), Type::Var(y)) if x == y => Ok(Subst::empty()),
+        (Type::Nat, Type::Nat) => Ok(Subst::empty()),
         (Type::Var(x), t) | (t, Type::Var(x)) => bind(*x, t),
         (Type::Arrow(a1, b1), Type::Arrow(a2, b2)) => {
             let s1 = unify(a1, a2)?;
             let s2 = unify(&s1.apply(b1), &s1.apply(b2))?;
             Ok(s2.compose(&s1))
         }
+        _ => Err(TypeError::Mismatch(a.clone(), b.clone())),
     }
 }
 
@@ -375,5 +382,32 @@ mod display_tests {
             ty: Type::var(99),
         };
         assert_eq!(format!("{}", s), "t99");
+    }
+
+    #[test]
+    fn nat_displays_as_nat() {
+        let s = Scheme { vars: vec![], ty: Type::Nat };
+        assert_eq!(format!("{}", s), "Nat");
+    }
+
+    #[test]
+    fn arrow_with_nat() {
+        let s = Scheme {
+            vars: vec![],
+            ty: Type::arrow(Type::Nat, Type::Nat),
+        };
+        assert_eq!(format!("{}", s), "Nat -> Nat");
+    }
+
+    #[test]
+    fn unify_nat_with_nat_succeeds() {
+        let s = unify(&Type::Nat, &Type::Nat).unwrap();
+        assert!(s.0.is_empty());
+    }
+
+    #[test]
+    fn unify_nat_with_arrow_fails() {
+        let err = unify(&Type::Nat, &Type::arrow(Type::Nat, Type::Nat)).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch(..)));
     }
 }

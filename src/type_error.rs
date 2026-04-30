@@ -60,6 +60,7 @@ fn collect_renames(t: &Type, renames: &mut HashMap<TVarId, String>, next: &mut u
             collect_renames(a, renames, next);
             collect_renames(b, renames, next);
         }
+        Type::Nat => {}
     }
 }
 
@@ -76,5 +77,6 @@ fn render(t: &Type, renames: &HashMap<TVarId, String>) -> String {
             };
             format!("{} -> {}", a_str, render(b, renames))
         }
+        Type::Nat => "Nat".to_string(),
     }
 }
