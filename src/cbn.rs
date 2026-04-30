@@ -63,8 +63,11 @@ pub struct EnvNode {
 pub enum Thunk {
     /// Not yet evaluated. Reduce `term` in `env` when forced.
     Pending { term: DBExpr, env: Env },
-    /// Already reduced to WHNF.
+    /// Already reduced to WHNF (a closure).
     Forced(Closure),
+    /// Already reduced to WHNF (a Nat). Memoized result of forcing a
+    /// thunk whose term reduced to a primitive numeric value.
+    ForcedNat(u64),
     /// A "neutral" binder: a placeholder pushed during full-NF traversal.
     /// Reifies as `Var(depth - 1 - level)` instead of reducing further.
     /// Carries a name hint for the eventual reified variable.
@@ -147,6 +150,8 @@ pub enum Value {
         head_name: String,
         args: Vec<(DBExpr, Env)>,
     },
+    /// A natural number literal — primitive WHNF value.
+    Nat(u64),
 }
 
 /// A frame on the Krivine work-stack.
@@ -195,11 +200,120 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 stack.push(Frame::Arg(self_ref, env.clone()));
                 focus = (*inner).clone();
             }
-            DBExpr::NatLit(_) | DBExpr::Prim(_) => {
-                // T4 will implement saturated-application evaluation.
-                // Until then, panic if a primitive reaches the evaluator —
-                // no surface syntax produces these yet.
-                unreachable!("primitives not yet evaluated (T4 follows)")
+            DBExpr::NatLit(n) => {
+                // A literal is WHNF. Process the stack: fire any Update
+                // frames (memoize the Nat), then if any args remain on the
+                // stack the user has passed args to a non-function — surface
+                // as a stuck neutral.
+                loop {
+                    match stack.pop() {
+                        Some(Frame::Update(node)) => {
+                            *node.thunk.borrow_mut() = Thunk::ForcedNat(n);
+                        }
+                        Some(Frame::Arg(t, e)) | Some(Frame::StrictArg(t, e)) => {
+                            // Apply a Nat to something — runtime type error.
+                            // Surface as neutral so the caller sees the
+                            // stuck term rather than crashing.
+                            let mut args = vec![(t, e)];
+                            while let Some(fr) = stack.pop() {
+                                match fr {
+                                    Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
+                                    Frame::Update(_) => {}
+                                }
+                            }
+                            return Ok(Value::Neu {
+                                head_level: 0,
+                                head_name: format!("{}", n),
+                                args,
+                            });
+                        }
+                        None => return Ok(Value::Nat(n)),
+                    }
+                }
+            }
+            DBExpr::Prim(op) => {
+                // Count how many arg frames are accessible (skipping any
+                // intervening Update frames). If fewer than arity, this is
+                // a partial application — surface as neutral.
+                let arity = op.arity();
+                let arg_count = stack
+                    .iter()
+                    .rev()
+                    .filter(|f| matches!(f, Frame::Arg(..) | Frame::StrictArg(..)))
+                    .count();
+                if arg_count < arity {
+                    let mut args: Vec<(DBExpr, Env)> = Vec::new();
+                    while let Some(fr) = stack.pop() {
+                        match fr {
+                            Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
+                            Frame::Update(_) => {}
+                        }
+                    }
+                    return Ok(Value::Neu {
+                        head_level: 0,
+                        head_name: op.name().to_string(),
+                        args,
+                    });
+                }
+                // Saturated. Pop arity args from the top, skipping Update
+                // frames (the Update markers are still in place; primitive
+                // results aren't memoizable through the same path, so we
+                // surface them as the result and let the outer NatLit arm
+                // handle Update memoization on the next iteration).
+                let mut popped: Vec<(DBExpr, Env)> = Vec::with_capacity(arity);
+                while popped.len() < arity {
+                    match stack.pop() {
+                        Some(Frame::Arg(t, e)) | Some(Frame::StrictArg(t, e)) => {
+                            popped.push((t, e));
+                        }
+                        Some(Frame::Update(_)) => continue,
+                        None => unreachable!("counted arg_count >= arity above"),
+                    }
+                }
+                use crate::ast::PrimOp::*;
+                match op {
+                    Succ => {
+                        let n = force_nat(&popped[0].0, &popped[0].1, budget)?;
+                        focus = DBExpr::NatLit(n.saturating_add(1));
+                        env = empty_env();
+                    }
+                    Pred => {
+                        let n = force_nat(&popped[0].0, &popped[0].1, budget)?;
+                        focus = DBExpr::NatLit(if n == 0 { 0 } else { n - 1 });
+                        env = empty_env();
+                    }
+                    Add => {
+                        let a = force_nat(&popped[0].0, &popped[0].1, budget)?;
+                        let b = force_nat(&popped[1].0, &popped[1].1, budget)?;
+                        focus = DBExpr::NatLit(a.saturating_add(b));
+                        env = empty_env();
+                    }
+                    Sub => {
+                        let a = force_nat(&popped[0].0, &popped[0].1, budget)?;
+                        let b = force_nat(&popped[1].0, &popped[1].1, budget)?;
+                        focus = DBExpr::NatLit(a.saturating_sub(b));
+                        env = empty_env();
+                    }
+                    Mul => {
+                        let a = force_nat(&popped[0].0, &popped[0].1, budget)?;
+                        let b = force_nat(&popped[1].0, &popped[1].1, budget)?;
+                        focus = DBExpr::NatLit(a.saturating_mul(b));
+                        env = empty_env();
+                    }
+                    IfZ => {
+                        let n = force_nat(&popped[0].0, &popped[0].1, budget)?;
+                        let (then_t, then_e) = popped[1].clone();
+                        let (else_t, else_e) = popped[2].clone();
+                        if n == 0 {
+                            focus = then_t;
+                            env = then_e;
+                        } else {
+                            focus = else_t;
+                            env = else_e;
+                        }
+                    }
+                }
+                // continue the outer `loop` with the new focus/env.
             }
             DBExpr::Abs(name, body) => {
                 // We have a value (a closure). Dispatch on the stack.
@@ -231,6 +345,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                                     thunk: RefCell::new(Thunk::Forced(c)),
                                     tail: closure.env.clone(),
                                 }),
+                                Value::Nat(n) => Rc::new(EnvNode {
+                                    thunk: RefCell::new(Thunk::ForcedNat(n)),
+                                    tail: closure.env.clone(),
+                                }),
                                 Value::Neu { .. } => {
                                     EnvNode::pending(arg_term, arg_env, closure.env.clone())
                                 }
@@ -256,6 +374,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                     let t = node.thunk.borrow();
                     match &*t {
                         Thunk::Forced(c) => Action::Forced(c.clone()),
+                        Thunk::ForcedNat(n) => Action::ForcedNat(*n),
                         Thunk::Pending { term, env } => Action::Pending(term.clone(), env.clone()),
                         Thunk::Bound { level, name } => Action::Bound(*level, name.clone()),
                     }
@@ -266,6 +385,12 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         // the same dispatch logic by re-emitting the Abs.
                         focus = DBExpr::abs(c.binder_name.clone(), c.body.clone());
                         env = c.env.clone();
+                    }
+                    Action::ForcedNat(n) => {
+                        // Re-emit as a NatLit; the NatLit arm above handles
+                        // memoization via Update frames.
+                        focus = DBExpr::NatLit(n);
+                        env = empty_env();
                     }
                     Action::Pending(term, env_p) => {
                         budget.tick()?;
@@ -300,6 +425,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
 /// What to do with a thunk cell after inspecting it. Local to `whnf`.
 enum Action {
     Forced(Closure),
+    ForcedNat(u64),
     Pending(DBExpr, Env),
     Bound(usize, String),
 }
@@ -357,6 +483,9 @@ pub fn nf(
                         work.push(Step::Process(a_term, a_env, depth));
                     }
                 }
+                Value::Nat(n) => {
+                    done.push(DBExpr::NatLit(n));
+                }
             },
             Step::BuildAbs(name) => {
                 let body_nf = done.pop().expect("nf: BuildAbs missing body");
@@ -379,6 +508,18 @@ pub fn nf(
 
     debug_assert_eq!(done.len(), 1, "nf: expected one result, got {}", done.len());
     Ok(done.pop().unwrap())
+}
+
+/// Force a thunk and require the result to be a `Nat`. Returns its value.
+/// On a non-Nat value, panics — well-typed code never reaches this path.
+/// In advisory mode (ill-typed code allowed to run), passing a non-Nat to
+/// a numeric primitive is an unrecoverable runtime error.
+fn force_nat(t: &DBExpr, env: &Env, budget: &mut Budget) -> Result<u64, EvalError> {
+    let v = whnf(t, env, budget)?;
+    match v {
+        Value::Nat(n) => Ok(n),
+        other => panic!("primitive expected Nat, got {:?}", other),
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +569,7 @@ mod tests {
         match v {
             Value::Cls(c) => c,
             Value::Neu { .. } => panic!("expected closure, got neutral"),
+            Value::Nat(n) => panic!("expected closure, got Nat({})", n),
         }
     }
 
