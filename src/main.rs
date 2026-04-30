@@ -58,12 +58,19 @@ fn main() {
 fn real_main() {
     let raw: Vec<String> = env::args().collect();
     let mut no_simplify = false;
-    let mut no_strict = false;
+    let mut no_strict_eval = false;
+    let mut no_typecheck = false;
     let mut args: Vec<String> = Vec::with_capacity(raw.len());
     for a in raw {
         match a.as_str() {
             "--no-simplify" => no_simplify = true,
-            "--no-strict" => no_strict = true,
+            // Disables strictness analysis in the evaluator (forces every
+            // β-step to use a lazy thunk). Performance toggle, not a
+            // type-system toggle.
+            "--no-strict" => no_strict_eval = true,
+            // Disables HM type checking. By default, ill-typed programs
+            // are rejected before evaluation.
+            "--no-typecheck" => no_typecheck = true,
             _ => args.push(a),
         }
     }
@@ -90,14 +97,20 @@ fn real_main() {
     let prelude_def_count = load_prelude().defs.len();
     let program = merge(load_prelude(), user);
 
-    // Type-check (advisory): print user-supplied def types and main type to
-    // stderr so stdout remains the evaluation result. Skip prelude defs to
-    // avoid noise.
+    // Type-check. Print user-supplied def types and main type to stderr.
+    // In strict mode (default), abort on any type error in user code.
+    // The prelude is pre-vetted; if it ever stops typechecking, that's
+    // a project bug — surface it as a runtime panic via load_prelude
+    // (the dedicated test `infer_prelude_test` is the regression gate).
+    let mut had_type_error = false;
     let types = lc::infer::infer_program(&program);
     for (name, res) in types.defs.iter().skip(prelude_def_count) {
         match res {
             Ok(scheme) => eprintln!("{} : {}", name, scheme),
-            Err(e) => eprintln!("{} : (type error: {})", name, e),
+            Err(e) => {
+                eprintln!("{} : (type error: {})", name, e);
+                had_type_error = true;
+            }
         }
     }
     if let Some(t_res) = &types.main_type {
@@ -111,8 +124,16 @@ fn real_main() {
                 };
                 eprintln!(": {}", s);
             }
-            Err(e) => eprintln!(": (type error: {})", e),
+            Err(e) => {
+                eprintln!(": (type error: {})", e);
+                had_type_error = true;
+            }
         }
+    }
+
+    if had_type_error && !no_typecheck {
+        eprintln!("aborting: type errors above (re-run with --no-typecheck to evaluate anyway)");
+        process::exit(1);
     }
 
     if program.main.is_none() {
@@ -131,7 +152,7 @@ fn real_main() {
         }
     };
     let prepared = if no_simplify { inlined } else { simplify(&inlined) };
-    match normalize_with_options(&prepared, DEFAULT_STEP_LIMIT, !no_strict) {
+    match normalize_with_options(&prepared, DEFAULT_STEP_LIMIT, !no_strict_eval) {
         Ok((nf, _)) => println!("{}", print(&nf)),
         Err(e) => {
             eprintln!("{}", e);

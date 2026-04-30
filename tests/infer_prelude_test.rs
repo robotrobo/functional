@@ -36,17 +36,6 @@ fn compose_typechecks() {
 }
 
 #[test]
-fn y_combinator_fails_occurs_check() {
-    // Y is the canonical HM rejection; if this ever flips to true, the
-    // type system has changed in a way that needs review.
-    assert_eq!(
-        status_map().get("Y"),
-        Some(&false),
-        "Y must not typecheck under HM"
-    );
-}
-
-#[test]
 fn fact_typechecks_under_primitives() {
     // After Nat migration, fact = fix (\rec. \n. ifz n 1 (mul n (rec (pred n))))
     // should typecheck cleanly to Nat -> Nat.
@@ -54,6 +43,22 @@ fn fact_typechecks_under_primitives() {
         status_map().get("fact"),
         Some(&true),
         "fact (using fix and primitives) must typecheck",
+    );
+}
+
+#[test]
+fn entire_prelude_typechecks() {
+    // After strict-mode migration, every definition in the prelude must
+    // typecheck under HM. The runtime aborts if any prelude def fails.
+    let status = typecheck_status();
+    let failures: Vec<&str> = status
+        .iter()
+        .filter_map(|(n, ok)| if !ok { Some(n.as_str()) } else { None })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "prelude defs that fail to typecheck: {:?}",
+        failures,
     );
 }
 
