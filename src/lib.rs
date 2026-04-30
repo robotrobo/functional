@@ -8,4 +8,5 @@ pub mod debruijn;
 pub mod cbn;
 pub mod simplify;
 pub mod strict;
+pub mod type_error;
 pub mod types;

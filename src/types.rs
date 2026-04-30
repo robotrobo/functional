@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::type_error::TypeError;
+
 pub type TVarId = u32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,6 +175,33 @@ mod subst_tests {
     }
 }
 
+/// Unify two types, returning the most general unifier. Implements the
+/// classical Robinson algorithm with occurs check. Applying the returned
+/// substitution to either input yields equal types.
+pub fn unify(a: &Type, b: &Type) -> Result<Subst, TypeError> {
+    match (a, b) {
+        (Type::Var(x), Type::Var(y)) if x == y => Ok(Subst::empty()),
+        (Type::Var(x), t) | (t, Type::Var(x)) => bind(*x, t),
+        (Type::Arrow(a1, b1), Type::Arrow(a2, b2)) => {
+            let s1 = unify(a1, a2)?;
+            let s2 = unify(&s1.apply(b1), &s1.apply(b2))?;
+            Ok(s2.compose(&s1))
+        }
+    }
+}
+
+fn bind(x: TVarId, t: &Type) -> Result<Subst, TypeError> {
+    if let Type::Var(y) = t {
+        if *y == x {
+            return Ok(Subst::empty());
+        }
+    }
+    if t.ftv().contains(&x) {
+        return Err(TypeError::OccursCheck(x, t.clone()));
+    }
+    Ok(Subst::singleton(x, t.clone()))
+}
+
 #[cfg(test)]
 mod ftv_tests {
     use super::*;
@@ -196,5 +225,55 @@ mod ftv_tests {
             ty: Type::arrow(Type::var(0), Type::var(1)),
         };
         assert_eq!(s.ftv(), [1].into_iter().collect());
+    }
+}
+
+#[cfg(test)]
+mod unify_tests {
+    use super::*;
+
+    #[test]
+    fn unify_var_with_var() {
+        let s = unify(&Type::var(0), &Type::var(1)).unwrap();
+        // Either {0 → 1} or {1 → 0} works; verify the result equates them.
+        assert_eq!(s.apply(&Type::var(0)), s.apply(&Type::var(1)));
+    }
+
+    #[test]
+    fn unify_same_var_is_empty() {
+        let s = unify(&Type::var(7), &Type::var(7)).unwrap();
+        assert!(s.0.is_empty());
+    }
+
+    #[test]
+    fn unify_var_with_arrow() {
+        let arr = Type::arrow(Type::var(1), Type::var(2));
+        let s = unify(&Type::var(0), &arr).unwrap();
+        assert_eq!(s.apply(&Type::var(0)), arr);
+    }
+
+    #[test]
+    fn unify_occurs_check_fails() {
+        // 0 ~ (0 → 1)
+        let arr = Type::arrow(Type::var(0), Type::var(1));
+        let err = unify(&Type::var(0), &arr).unwrap_err();
+        assert!(matches!(err, TypeError::OccursCheck(0, _)));
+    }
+
+    #[test]
+    fn unify_arrows_recursive() {
+        let lhs = Type::arrow(Type::var(0), Type::var(1));
+        let rhs = Type::arrow(Type::var(2), Type::var(3));
+        let s = unify(&lhs, &rhs).unwrap();
+        assert_eq!(s.apply(&lhs), s.apply(&rhs));
+    }
+
+    #[test]
+    fn unify_chained() {
+        // (0 → 0) ~ (1 → 2) — must force 1 = 2.
+        let lhs = Type::arrow(Type::var(0), Type::var(0));
+        let rhs = Type::arrow(Type::var(1), Type::var(2));
+        let s = unify(&lhs, &rhs).unwrap();
+        assert_eq!(s.apply(&Type::var(1)), s.apply(&Type::var(2)));
     }
 }
