@@ -329,6 +329,72 @@ mod infer_expr_tests {
     }
 
     #[test]
+    fn nat_lit_has_type_nat() {
+        let e = Expr::nat(42);
+        let t = infer(&e).unwrap();
+        assert_eq!(t, Type::Nat);
+    }
+
+    #[test]
+    fn succ_has_nat_to_nat_type() {
+        let e = Expr::prim(crate::ast::PrimOp::Succ);
+        let t = infer(&e).unwrap();
+        assert_eq!(t, Type::arrow(Type::Nat, Type::Nat));
+    }
+
+    #[test]
+    fn add_applied_to_two_nats_yields_nat() {
+        let e = Expr::app(
+            Expr::app(Expr::prim(crate::ast::PrimOp::Add), Expr::nat(1)),
+            Expr::nat(2),
+        );
+        let t = infer(&e).unwrap();
+        assert_eq!(t, Type::Nat);
+    }
+
+    #[test]
+    fn add_applied_to_nonnat_fails() {
+        // add (\x. x) 1 — first arg is a function, not Nat
+        let e = Expr::app(
+            Expr::app(
+                Expr::prim(crate::ast::PrimOp::Add),
+                Expr::abs("x", Expr::var("x")),
+            ),
+            Expr::nat(1),
+        );
+        let err = infer(&e);
+        assert!(err.is_err(), "expected type error, got {:?}", err);
+    }
+
+    #[test]
+    fn ifz_branches_must_share_type() {
+        // ifz 0 1 (\x. x) — branches differ in type, should fail
+        let e = Expr::app(
+            Expr::app(
+                Expr::app(Expr::prim(crate::ast::PrimOp::IfZ), Expr::nat(0)),
+                Expr::nat(1),
+            ),
+            Expr::abs("x", Expr::var("x")),
+        );
+        let err = infer(&e);
+        assert!(err.is_err(), "expected type error, got {:?}", err);
+    }
+
+    #[test]
+    fn ifz_with_matching_branches_typechecks() {
+        // ifz 0 1 2 : Nat
+        let e = Expr::app(
+            Expr::app(
+                Expr::app(Expr::prim(crate::ast::PrimOp::IfZ), Expr::nat(0)),
+                Expr::nat(1),
+            ),
+            Expr::nat(2),
+        );
+        let t = infer(&e).unwrap();
+        assert_eq!(t, Type::Nat);
+    }
+
+    #[test]
     fn fix_arg_must_be_endofunction() {
         // fix (\x. \y. x) — body is α → β → α; unify with γ → γ forces
         // γ = β → α and γ = α, which is occurs-check infinite.
