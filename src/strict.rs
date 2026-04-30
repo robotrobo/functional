@@ -38,6 +38,7 @@ pub fn mark_strict(e: &DBExpr) -> DBExpr {
         DBExpr::Var(_) => e.clone(),
         DBExpr::Abs(name, body) => DBExpr::abs(name.clone(), mark_strict(body)),
         DBExpr::App(_, _) | DBExpr::StrictApp(_, _) => mark_app(e),
+        DBExpr::Fix(inner) => DBExpr::fix(mark_strict(inner)),
     }
 }
 
@@ -120,6 +121,11 @@ pub fn head_strict_db(e: &DBExpr, k: usize) -> Vec<usize> {
                 // whether it's an Abs to apply). The arg may or may not
                 // be forced — depends on what the head turns out to do.
                 go(f, k, depth, out);
+            }
+            DBExpr::Fix(inner) => {
+                // fix e ↪ e (fix e), which forces e first. Whatever e
+                // forces, fix(e) also forces.
+                go(inner, k, depth, out);
             }
         }
     }

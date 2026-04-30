@@ -111,6 +111,15 @@ pub fn infer_expr(env: &TypeEnv, e: &Expr, fresh: &mut Fresh) -> Result<(Subst, 
             let result_ty = s3.apply(&alpha);
             Ok((composed, result_ty))
         }
+        Expr::Fix(inner) => {
+            // fix : ∀a. (a → a) → a
+            let (s1, t_inner) = infer_expr(env, inner, fresh)?;
+            let alpha = fresh.tvar();
+            let s2 = unify(&s1.apply(&t_inner), &Type::arrow(alpha.clone(), alpha.clone()))?;
+            let composed = s2.compose(&s1);
+            let result_ty = composed.apply(&alpha);
+            Ok((composed, result_ty))
+        }
     }
 }
 

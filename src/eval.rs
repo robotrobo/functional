@@ -43,6 +43,7 @@ pub fn subst(target: &Expr, x: &str, value: &Expr) -> Expr {
             }
         }
         Expr::App(e1, e2) => Expr::app(subst(e1, x, value), subst(e2, x, value)),
+        Expr::Fix(inner) => Expr::fix(subst(inner, x, value)),
     }
 }
 
@@ -58,7 +59,13 @@ pub fn reduce_step(e: &Expr) -> Option<Expr> {
             }
         }
         Expr::Abs(p, body) => reduce_step(body).map(|f| Expr::abs(p, f)),
-        _ => None,
+        Expr::Fix(inner) => {
+            // fix e ↪ e (fix e). Always reducible at the head, regardless
+            // of inner's shape — the next reduce_step call may reduce
+            // inside `inner` further.
+            Some(Expr::app((**inner).clone(), Expr::fix((**inner).clone())))
+        }
+        Expr::Var(_) => None,
     }
 }
 
@@ -163,6 +170,7 @@ fn alpha_eq_with(a: &Expr, b: &Expr, env_a: &mut Vec<String>, env_b: &mut Vec<St
         (Expr::App(f_a, x_a), Expr::App(f_b, x_b)) => {
             alpha_eq_with(f_a, f_b, env_a, env_b) && alpha_eq_with(x_a, x_b, env_a, env_b)
         }
+        (Expr::Fix(a), Expr::Fix(b)) => alpha_eq_with(a, b, env_a, env_b),
         _ => false,
     }
 }
@@ -180,6 +188,7 @@ pub fn free_vars(e: &Expr) -> HashSet<String> {
             set.extend(free_vars(a));
             set
         }
+        Expr::Fix(inner) => free_vars(inner),
     }
 }
 

@@ -186,6 +186,15 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 stack.push(Frame::StrictArg((*x).clone(), env.clone()));
                 focus = (*f).clone();
             }
+            DBExpr::Fix(inner) => {
+                // fix e ↪ e (fix e). Push Fix(inner) as the App argument;
+                // focus becomes the inner expression. Charge a budget tick
+                // per unfold so divergent fix terms hit the limit.
+                budget.tick()?;
+                let self_ref = DBExpr::Fix(inner.clone());
+                stack.push(Frame::Arg(self_ref, env.clone()));
+                focus = (*inner).clone();
+            }
             DBExpr::Abs(name, body) => {
                 // We have a value (a closure). Dispatch on the stack.
                 let closure = Closure {

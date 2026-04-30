@@ -3,6 +3,7 @@ pub enum Expr {
     Var(String),
     Abs(String, Box<Expr>),
     App(Box<Expr>, Box<Expr>),
+    Fix(Box<Expr>),
 }
 
 impl Expr {
@@ -16,6 +17,10 @@ impl Expr {
 
     pub fn app(f: Expr, x: Expr) -> Self {
         Expr::App(Box::new(f), Box::new(x))
+    }
+
+    pub fn fix(e: Expr) -> Self {
+        Expr::Fix(Box::new(e))
     }
 }
 
