@@ -7,16 +7,13 @@ pub fn print(e: &Expr) -> String {
     print_expr(e)
 }
 
-/// Try to recognize a Church-encoded value (numeral, boolean, or list) and
-/// produce a friendly rendering. Returns `None` if `e` is not a recognizable
-/// Church shape; the caller should fall back to raw lambda printing.
+/// Try to recognize a Church-encoded list and produce a friendly rendering.
+/// Numerals and booleans are NOT detected — Church-shaped lambdas like
+/// `\f. \x. x` are ambiguous (they could be Church 0, Church false, or
+/// just a polymorphic function `\_. id`). Under HM typing, the inferred
+/// type tells the user what the value really is; the printer should not
+/// guess one interpretation. List shape is distinctive enough to keep.
 fn detect_church_shape(e: &Expr) -> Option<String> {
-    if let Some(n) = as_church_numeral(e) {
-        return Some(n.to_string());
-    }
-    if let Some(b) = as_church_bool(e) {
-        return Some(b.to_string());
-    }
     if let Some(items) = as_church_list(e) {
         let inner = items
             .iter()
@@ -25,76 +22,6 @@ fn detect_church_shape(e: &Expr) -> Option<String> {
             .join(", ");
         return Some(format!("[{}]", inner));
     }
-    None
-}
-
-/// If `e` is `\f. \x. f^n x` (for any binder names), return `n`.
-/// The detection must be α-aware: the names `f` and `x` are not literal —
-/// they're whatever the two binders happen to be called.
-fn as_church_numeral(_e: &Expr) -> Option<usize> {
-    // TODO: implement
-    match _e {
-        Expr::Abs(f, body) => match &**body {
-            Expr::Abs(x, body2) => {
-                if f == x {
-                    return None;
-                };
-                count_apps(body2, f, x)
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn count_apps(e: &Expr, f: &str, x: &str) -> Option<usize> {
-    let mut count = 0;
-
-    let mut peeled = e;
-
-    loop {
-        match peeled {
-            Expr::Var(_x) if _x == x => {
-                return Some(count);
-            }
-
-            Expr::App(v, inner) => match &**v {
-                Expr::Var(_f) if _f == f => {
-                    peeled = inner;
-                    count += 1;
-                    continue;
-                }
-                _ => return None,
-            },
-
-            _ => return None,
-        }
-    }
-}
-
-/// If `e` is `\t. \f. t` return Some(true). If `\t. \f. f` return Some(false).
-/// Again, binder names are arbitrary — the test is structural.
-fn as_church_bool(_e: &Expr) -> Option<bool> {
-    // TODO: implement
-    let Expr::Abs(t, body) = _e else {
-        return None;
-    };
-
-    let Expr::Abs(f, body2) = &**body else {
-        return None;
-    };
-
-    if let Expr::Var(_t) = &**body2 {
-        if _t == t {
-            return Some(true);
-        }
-        if _t == f {
-            return Some(false);
-        }
-
-        return None;
-    };
-
     None
 }
 
@@ -117,8 +44,16 @@ fn as_church_list(e: &Expr) -> Option<Vec<Expr>> {
     let mut peeled: &Expr = body2;
     loop {
         match peeled {
-            // base case: hit the nil binder → done
-            Expr::Var(name) if name == n => return Some(items),
+            // base case: hit the nil binder → done. Only count this as a
+            // list if we actually saw at least one element — `\c. \n. n`
+            // alone is too ambiguous (could be Church zero, false, or a
+            // generic K-ish function).
+            Expr::Var(name) if name == n => {
+                if items.is_empty() {
+                    return None;
+                }
+                return Some(items);
+            }
             // cons case: App(App(Var c, head), rest)
             Expr::App(outer, rest) => {
                 let Expr::App(c_var, head) = &**outer else {
@@ -215,24 +150,20 @@ mod tests {
         assert_eq!(print(&e), "(\\x. x) y");
     }
     #[test]
-    fn print_church_list_of_numerals() {
-        // \c. \n. c (\f. \x. f x) (c (\f. \x. f (f x)) n)  →  "[1, 2]"
-        let one = Expr::abs(
-            "f",
-            Expr::abs("x", Expr::app(Expr::var("f"), Expr::var("x"))),
-        );
-        let two = Expr::abs(
-            "f",
-            Expr::abs(
-                "x",
-                Expr::app(Expr::var("f"), Expr::app(Expr::var("f"), Expr::var("x"))),
-            ),
-        );
+    fn print_church_list_of_nat_lits() {
+        // \c. \n. c 1 (c 2 n)  →  "[1, 2]"
         let body = Expr::app(
-            Expr::app(Expr::var("c"), one),
-            Expr::app(Expr::app(Expr::var("c"), two), Expr::var("n")),
+            Expr::app(Expr::var("c"), Expr::nat(1)),
+            Expr::app(Expr::app(Expr::var("c"), Expr::nat(2)), Expr::var("n")),
         );
         let list = Expr::abs("c", Expr::abs("n", body));
         assert_eq!(print(&list), "[1, 2]");
+    }
+
+    #[test]
+    fn church_numeral_shape_no_longer_printed_as_digit() {
+        // After Nat migration, `\f. \x. x` is just a function — not "0".
+        let e = Expr::abs("f", Expr::abs("x", Expr::var("x")));
+        assert_eq!(print(&e), "\\f. \\x. x");
     }
 }
