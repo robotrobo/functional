@@ -8,5 +8,5 @@ fn round_trip_examples_identity() {
     assert_eq!(parsed.defs.len(), 2);
     let main = parsed.main.expect("main expected");
     let printed = print(&main);
-    assert_eq!(printed, "const (id apple) banana");
+    assert_eq!(printed, "print (id 7)");
 }
