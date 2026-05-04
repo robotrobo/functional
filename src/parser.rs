@@ -69,7 +69,20 @@ fn ident() -> impl Parser<char, String, Error = Simple<char>> + Clone {
         .try_map(|s, span| {
             if matches!(
                 s.as_str(),
-                "def" | "let" | "in" | "fix" | "succ" | "pred" | "add" | "sub" | "mul" | "ifz"
+                "def"
+                    | "let"
+                    | "in"
+                    | "fix"
+                    | "succ"
+                    | "pred"
+                    | "add"
+                    | "sub"
+                    | "mul"
+                    | "ifz"
+                    | "pure"
+                    | "bind"
+                    | "print"
+                    | "readNat"
             ) {
                 Err(Simple::custom(span, format!("unexpected keyword `{s}`")))
             } else {
@@ -172,6 +185,10 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             text::keyword("sub").to(Expr::prim(crate::ast::PrimOp::Sub)),
             text::keyword("mul").to(Expr::prim(crate::ast::PrimOp::Mul)),
             text::keyword("ifz").to(Expr::prim(crate::ast::PrimOp::IfZ)),
+            text::keyword("pure").to(Expr::prim(crate::ast::PrimOp::Pure)),
+            text::keyword("bind").to(Expr::prim(crate::ast::PrimOp::Bind)),
+            text::keyword("print").to(Expr::prim(crate::ast::PrimOp::Print)),
+            text::keyword("readNat").to(Expr::prim(crate::ast::PrimOp::ReadNat)),
         ))
         .then_ignore(hws());
 

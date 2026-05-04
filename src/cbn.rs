@@ -348,6 +348,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         Some(_) => Some(popped[2].clone()),
                         None => None,
                     },
+                    _ => unreachable!("Pure/Bind/Print/ReadNat handled in Task 5"),
                 };
                 match result {
                     Some((next_focus, next_env)) => {

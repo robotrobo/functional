@@ -142,6 +142,22 @@ fn instantiate_prim(op: crate::ast::PrimOp, fresh: &mut Fresh) -> Type {
                 Type::arrow(a.clone(), Type::arrow(a.clone(), a)),
             )
         }
+        Pure => {
+            // forall a. a -> IO a
+            let a = fresh.tvar();
+            Type::arrow(a.clone(), Type::IO(Box::new(a)))
+        }
+        Bind => {
+            // forall a b. IO a -> (a -> IO b) -> IO b
+            let a = fresh.tvar();
+            let b = fresh.tvar();
+            let io_a = Type::IO(Box::new(a.clone()));
+            let io_b = Type::IO(Box::new(b));
+            let kont = Type::arrow(a, io_b.clone());
+            Type::arrow(io_a, Type::arrow(kont, io_b))
+        }
+        Print => Type::arrow(Type::Nat, Type::IO(Box::new(Type::Unit))),
+        ReadNat => Type::IO(Box::new(Type::Nat)),
     }
 }
 

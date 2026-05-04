@@ -17,6 +17,10 @@ pub enum PrimOp {
     Sub,
     Mul,
     IfZ,
+    Pure,
+    Bind,
+    Print,
+    ReadNat,
 }
 
 impl PrimOp {
@@ -25,6 +29,10 @@ impl PrimOp {
             PrimOp::Succ | PrimOp::Pred => 1,
             PrimOp::Add | PrimOp::Sub | PrimOp::Mul => 2,
             PrimOp::IfZ => 3,
+            PrimOp::Pure => 1,
+            PrimOp::Bind => 2,
+            PrimOp::Print => 1,
+            PrimOp::ReadNat => 0,
         }
     }
 
@@ -36,6 +44,10 @@ impl PrimOp {
             PrimOp::Sub => "sub",
             PrimOp::Mul => "mul",
             PrimOp::IfZ => "ifz",
+            PrimOp::Pure => "pure",
+            PrimOp::Bind => "bind",
+            PrimOp::Print => "print",
+            PrimOp::ReadNat => "readNat",
         }
     }
 }
