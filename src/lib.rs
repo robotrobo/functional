@@ -7,6 +7,7 @@ pub mod repl;
 pub mod debruijn;
 pub mod cbn;
 pub mod infer;
+pub mod io_runtime;
 pub mod simplify;
 pub mod strict;
 pub mod type_error;
