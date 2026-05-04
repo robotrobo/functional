@@ -10,6 +10,8 @@ pub enum Type {
     Var(TVarId),
     Arrow(Box<Type>, Box<Type>),
     Nat,
+    Unit,
+    IO(Box<Type>),
 }
 
 impl Type {
@@ -35,7 +37,8 @@ impl Type {
                 a.collect_ftv(out);
                 b.collect_ftv(out);
             }
-            Type::Nat => {}
+            Type::Nat | Type::Unit => {}
+            Type::IO(inner) => inner.collect_ftv(out),
         }
     }
 }
@@ -68,6 +71,14 @@ impl fmt::Display for Type {
                 write!(f, "{} -> {}", a_str, b)
             }
             Type::Nat => write!(f, "Nat"),
+            Type::Unit => write!(f, "Unit"),
+            Type::IO(inner) => {
+                let inner_str = match **inner {
+                    Type::Arrow(_, _) => format!("({})", inner),
+                    _ => format!("{}", inner),
+                };
+                write!(f, "IO {}", inner_str)
+            }
         }
     }
 }
@@ -112,6 +123,14 @@ fn pretty_letters(t: &Type, bound: &[TVarId]) -> String {
             format!("{} -> {}", a_str, pretty_letters(b, bound))
         }
         Type::Nat => "Nat".to_string(),
+        Type::Unit => "Unit".to_string(),
+        Type::IO(inner) => {
+            let inner_str = match **inner {
+                Type::Arrow(_, _) => format!("({})", pretty_letters(inner, bound)),
+                _ => pretty_letters(inner, bound),
+            };
+            format!("IO {}", inner_str)
+        }
     }
 }
 
@@ -141,6 +160,8 @@ impl Subst {
             },
             Type::Arrow(a, b) => Type::arrow(self.apply(a), self.apply(b)),
             Type::Nat => Type::Nat,
+            Type::Unit => Type::Unit,
+            Type::IO(inner) => Type::IO(Box::new(self.apply(inner))),
         }
     }
 
@@ -245,12 +266,14 @@ pub fn unify(a: &Type, b: &Type) -> Result<Subst, TypeError> {
     match (a, b) {
         (Type::Var(x), Type::Var(y)) if x == y => Ok(Subst::empty()),
         (Type::Nat, Type::Nat) => Ok(Subst::empty()),
+        (Type::Unit, Type::Unit) => Ok(Subst::empty()),
         (Type::Var(x), t) | (t, Type::Var(x)) => bind(*x, t),
         (Type::Arrow(a1, b1), Type::Arrow(a2, b2)) => {
             let s1 = unify(a1, a2)?;
             let s2 = unify(&s1.apply(b1), &s1.apply(b2))?;
             Ok(s2.compose(&s1))
         }
+        (Type::IO(a), Type::IO(b)) => unify(a, b),
         _ => Err(TypeError::Mismatch(a.clone(), b.clone())),
     }
 }
@@ -346,6 +369,64 @@ mod unify_tests {
 #[cfg(test)]
 mod display_tests {
     use super::*;
+
+    #[test]
+    fn unit_displays_as_unit() {
+        let s = Scheme { vars: vec![], ty: Type::Unit };
+        assert_eq!(format!("{}", s), "Unit");
+    }
+
+    #[test]
+    fn io_nat_displays_as_io_nat() {
+        let s = Scheme { vars: vec![], ty: Type::IO(Box::new(Type::Nat)) };
+        assert_eq!(format!("{}", s), "IO Nat");
+    }
+
+    #[test]
+    fn io_arrow_inner_parens() {
+        // IO (Nat -> Nat) — inner arrow needs parens.
+        let s = Scheme {
+            vars: vec![],
+            ty: Type::IO(Box::new(Type::arrow(Type::Nat, Type::Nat))),
+        };
+        assert_eq!(format!("{}", s), "IO (Nat -> Nat)");
+    }
+
+    #[test]
+    fn nat_to_io_unit_displays_cleanly() {
+        let s = Scheme {
+            vars: vec![],
+            ty: Type::arrow(Type::Nat, Type::IO(Box::new(Type::Unit))),
+        };
+        assert_eq!(format!("{}", s), "Nat -> IO Unit");
+    }
+
+    #[test]
+    fn unify_unit_with_unit_succeeds() {
+        let s = unify(&Type::Unit, &Type::Unit).unwrap();
+        assert!(s.0.is_empty());
+    }
+
+    #[test]
+    fn unify_io_recurses() {
+        let lhs = Type::IO(Box::new(Type::var(0)));
+        let rhs = Type::IO(Box::new(Type::Nat));
+        let s = unify(&lhs, &rhs).unwrap();
+        assert_eq!(s.apply(&Type::var(0)), Type::Nat);
+    }
+
+    #[test]
+    fn unify_io_with_nat_fails() {
+        let lhs = Type::IO(Box::new(Type::Nat));
+        let err = unify(&lhs, &Type::Nat).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch(..)));
+    }
+
+    #[test]
+    fn unify_unit_with_nat_fails() {
+        let err = unify(&Type::Unit, &Type::Nat).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch(..)));
+    }
 
     #[test]
     fn scheme_with_one_quantifier() {

@@ -60,7 +60,8 @@ fn collect_renames(t: &Type, renames: &mut HashMap<TVarId, String>, next: &mut u
             collect_renames(a, renames, next);
             collect_renames(b, renames, next);
         }
-        Type::Nat => {}
+        Type::Nat | Type::Unit => {}
+        Type::IO(inner) => collect_renames(inner, renames, next),
     }
 }
 
@@ -78,5 +79,13 @@ fn render(t: &Type, renames: &HashMap<TVarId, String>) -> String {
             format!("{} -> {}", a_str, render(b, renames))
         }
         Type::Nat => "Nat".to_string(),
+        Type::Unit => "Unit".to_string(),
+        Type::IO(inner) => {
+            let inner_str = match **inner {
+                Type::Arrow(_, _) => format!("({})", render(inner, renames)),
+                _ => render(inner, renames),
+            };
+            format!("IO {}", inner_str)
+        }
     }
 }
