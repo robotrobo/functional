@@ -40,3 +40,8 @@ def map = \f. \l. \c. \n. l (\h. c (f h)) n
 def filter = \p. \l. \c. \n. l (\h. \r. if (p h) ( c h r ) ( r ) ) n
 def append = \xs. \ys. \c. \n.  xs c (ys c n)
 def length = \l. foldr (\h. \r. succ r) 0 l
+
+
+-- IO sugar built on top of bind / pure.
+def seq  = \a. \b. bind a (\_. b)
+def fmap = \f. \m. bind m (\x. pure (f x))

@@ -144,6 +144,42 @@ fn read_nat_parse_failure_returns_runtime_error() {
     }
 }
 
+fn run_with_prelude(src: &str, stdin: &str) -> (Value, String) {
+    use std::fs;
+    let prelude_src = fs::read_to_string("lib/prelude.lc").expect("read prelude");
+    let combined = format!("{}\n{}", prelude_src, src);
+    run(&combined, stdin)
+}
+
+#[test]
+fn seq_runs_left_then_right() {
+    let (v, out) = run_with_prelude("seq (print 1) (print 2)", "");
+    assert!(matches!(v, Value::Unit));
+    assert_eq!(out, "1\n2\n");
+}
+
+#[test]
+fn fmap_lifts_pure_function_into_io() {
+    let (v, out) = run_with_prelude("fmap (mul 3) (pure 4)", "");
+    assert!(matches!(v, Value::Nat(12)));
+    assert_eq!(out, "");
+}
+
+#[test]
+fn deep_seq_chain_does_not_stack_overflow() {
+    // Programmatically build `seq (pure ()) (seq (pure ()) (... (pure ())))`
+    // 2000 deep. The run_io driver must walk this without a Rust stack
+    // overflow — it iterates on the right-hand action rather than recursing.
+    let depth = 2_000usize;
+    let mut src = String::from("pure ()");
+    for _ in 0..depth {
+        src = format!("seq (pure ()) ({})", src);
+    }
+    let (v, out) = run_with_prelude(&src, "");
+    assert!(matches!(v, Value::Unit));
+    assert_eq!(out, "");
+}
+
 #[test]
 fn read_nat_eof_returns_runtime_error() {
     use lc::error::EvalError;

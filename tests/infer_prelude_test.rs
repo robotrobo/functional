@@ -63,6 +63,13 @@ fn entire_prelude_typechecks() {
 }
 
 #[test]
+fn seq_and_fmap_typecheck() {
+    let s = status_map();
+    assert_eq!(s.get("seq"), Some(&true), "seq must typecheck");
+    assert_eq!(s.get("fmap"), Some(&true), "fmap must typecheck");
+}
+
+#[test]
 fn print_full_status() {
     // Diagnostic — always passes. Run with `--nocapture` for the table.
     for (name, ok) in typecheck_status() {
