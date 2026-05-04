@@ -68,6 +68,9 @@ pub enum Thunk {
     /// Already reduced to WHNF (a Nat). Memoized result of forcing a
     /// thunk whose term reduced to a primitive numeric value.
     ForcedNat(u64),
+    /// Already reduced to WHNF (Unit). Memoized result of forcing a
+    /// thunk whose term reduced to the unit literal `()`.
+    ForcedUnit,
     /// A "neutral" binder: a placeholder pushed during full-NF traversal.
     /// Reifies as `Var(depth - 1 - level)` instead of reducing further.
     /// Carries a name hint for the eventual reified variable.
@@ -152,6 +155,8 @@ pub enum Value {
     },
     /// A natural number literal — primitive WHNF value.
     Nat(u64),
+    /// The unit literal `()` — primitive WHNF value.
+    Unit,
     /// A non-function value (a primitive operator, a `NatLit`, a `UnitLit`,
     /// ...) applied to one or more arguments that the runtime cannot reduce.
     /// Two situations produce this:
@@ -241,21 +246,30 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 }
             }
             DBExpr::UnitLit => {
-                // Unit is WHNF. Value::Unit is introduced in Task 3; for
-                // now surface as a StuckApp so nf round-trips it unchanged.
-                // Discard any Update frames (we can't memoize Unit yet);
-                // if args remain the program is ill-typed — surface them too.
-                let mut args: Vec<(DBExpr, Env)> = Vec::new();
-                while let Some(fr) = stack.pop() {
-                    match fr {
-                        Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
-                        Frame::Update(_) => {}
+                // Unit is WHNF. Process the stack: fire Update frames (memoize as
+                // Unit), then if any args remain the user has applied `()` to
+                // something — surface as stuck.
+                loop {
+                    match stack.pop() {
+                        Some(Frame::Update(node)) => {
+                            *node.thunk.borrow_mut() = Thunk::ForcedUnit;
+                        }
+                        Some(Frame::Arg(t, e)) | Some(Frame::StrictArg(t, e)) => {
+                            let mut args = vec![(t, e)];
+                            while let Some(fr) = stack.pop() {
+                                match fr {
+                                    Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
+                                    Frame::Update(_) => {}
+                                }
+                            }
+                            return Ok(Value::StuckApp {
+                                head: DBExpr::UnitLit,
+                                args,
+                            });
+                        }
+                        None => return Ok(Value::Unit),
                     }
                 }
-                return Ok(Value::StuckApp {
-                    head: DBExpr::UnitLit,
-                    args,
-                });
             }
             DBExpr::Prim(op) => {
                 // Count how many arg frames are accessible (skipping any
@@ -383,6 +397,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                                     thunk: RefCell::new(Thunk::ForcedNat(n)),
                                     tail: closure.env.clone(),
                                 }),
+                                Value::Unit => Rc::new(EnvNode {
+                                    thunk: RefCell::new(Thunk::ForcedUnit),
+                                    tail: closure.env.clone(),
+                                }),
                                 Value::Neu { .. } | Value::StuckApp { .. } => {
                                     EnvNode::pending(arg_term, arg_env, closure.env.clone())
                                 }
@@ -409,6 +427,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                     match &*t {
                         Thunk::Forced(c) => Action::Forced(c.clone()),
                         Thunk::ForcedNat(n) => Action::ForcedNat(*n),
+                        Thunk::ForcedUnit => Action::ForcedUnit,
                         Thunk::Pending { term, env } => Action::Pending(term.clone(), env.clone()),
                         Thunk::Bound { level, name } => Action::Bound(*level, name.clone()),
                     }
@@ -424,6 +443,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         // Re-emit as a NatLit; the NatLit arm above handles
                         // memoization via Update frames.
                         focus = DBExpr::NatLit(n);
+                        env = empty_env();
+                    }
+                    Action::ForcedUnit => {
+                        focus = DBExpr::UnitLit;
                         env = empty_env();
                     }
                     Action::Pending(term, env_p) => {
@@ -460,6 +483,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
 enum Action {
     Forced(Closure),
     ForcedNat(u64),
+    ForcedUnit,
     Pending(DBExpr, Env),
     Bound(usize, String),
 }
@@ -523,6 +547,9 @@ pub fn nf(
                 Value::Nat(n) => {
                     done.push(DBExpr::NatLit(n));
                 }
+                Value::Unit => {
+                    done.push(DBExpr::UnitLit);
+                }
                 Value::StuckApp { head, args } => {
                     let k = args.len();
                     work.push(Step::BuildStuckApp { head, k });
@@ -583,7 +610,7 @@ fn try_force_nat(
     let v = whnf(t, env, budget)?;
     match v {
         Value::Nat(n) => Ok(Some(n)),
-        Value::Neu { .. } | Value::Cls(_) | Value::StuckApp { .. } => Ok(None),
+        Value::Neu { .. } | Value::Cls(_) | Value::StuckApp { .. } | Value::Unit => Ok(None),
     }
 }
 
@@ -635,6 +662,7 @@ mod tests {
             Value::Cls(c) => c,
             Value::Neu { .. } => panic!("expected closure, got neutral"),
             Value::Nat(n) => panic!("expected closure, got Nat({})", n),
+            Value::Unit => panic!("expected closure, got Unit"),
             Value::StuckApp { .. } => panic!("expected closure, got stuck application"),
         }
     }

@@ -620,4 +620,19 @@ mod tests {
         let nf = normalize(&applied, 200).unwrap();
         assert!(alpha_eq(&nf, &zero), "got {:?}", nf);
     }
+
+    #[test]
+    fn unit_lit_normalizes_to_self() {
+        let e = Expr::UnitLit;
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::UnitLit);
+    }
+
+    #[test]
+    fn id_applied_to_unit_returns_unit() {
+        // (\x. x) ()  →  ()
+        let e = Expr::app(Expr::abs("x", Expr::var("x")), Expr::UnitLit);
+        let nf = normalize(&e, 100).unwrap();
+        assert_eq!(nf, Expr::UnitLit);
+    }
 }
