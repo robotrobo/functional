@@ -82,7 +82,7 @@ fn render(t: &Type, renames: &HashMap<TVarId, String>) -> String {
         Type::Unit => "Unit".to_string(),
         Type::IO(inner) => {
             let inner_str = match **inner {
-                Type::Arrow(_, _) => format!("({})", render(inner, renames)),
+                Type::Arrow(_, _) | Type::IO(_) => format!("({})", render(inner, renames)),
                 _ => render(inner, renames),
             };
             format!("IO {}", inner_str)

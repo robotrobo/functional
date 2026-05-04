@@ -74,7 +74,7 @@ impl fmt::Display for Type {
             Type::Unit => write!(f, "Unit"),
             Type::IO(inner) => {
                 let inner_str = match **inner {
-                    Type::Arrow(_, _) => format!("({})", inner),
+                    Type::Arrow(_, _) | Type::IO(_) => format!("({})", inner),
                     _ => format!("{}", inner),
                 };
                 write!(f, "IO {}", inner_str)
@@ -126,7 +126,7 @@ fn pretty_letters(t: &Type, bound: &[TVarId]) -> String {
         Type::Unit => "Unit".to_string(),
         Type::IO(inner) => {
             let inner_str = match **inner {
-                Type::Arrow(_, _) => format!("({})", pretty_letters(inner, bound)),
+                Type::Arrow(_, _) | Type::IO(_) => format!("({})", pretty_letters(inner, bound)),
                 _ => pretty_letters(inner, bound),
             };
             format!("IO {}", inner_str)
@@ -490,5 +490,14 @@ mod display_tests {
     fn unify_nat_with_arrow_fails() {
         let err = unify(&Type::Nat, &Type::arrow(Type::Nat, Type::Nat)).unwrap_err();
         assert!(matches!(err, TypeError::Mismatch(..)));
+    }
+
+    #[test]
+    fn nested_io_displays_with_parens() {
+        let s = Scheme {
+            vars: vec![],
+            ty: Type::IO(Box::new(Type::IO(Box::new(Type::Nat)))),
+        };
+        assert_eq!(format!("{}", s), "IO (IO Nat)");
     }
 }
