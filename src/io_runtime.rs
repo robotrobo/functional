@@ -51,14 +51,10 @@ fn force_to_nat(
     match v {
         Value::Nat(n) => Ok(n),
         other => Err(EvalError::Runtime(format!(
-            "runtime error: expected Nat, got {:?}",
+            "expected Nat, got {:?}",
             other
         ))),
     }
-}
-
-fn force_value(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, EvalError> {
-    whnf(term, env, budget)
 }
 
 /// Apply a continuation `(k_term, k_env) : a -> IO b` to a runtime `Value`,
@@ -91,7 +87,7 @@ fn apply_continuation(
             let closure = match whnf(k_term, k_env, budget)? {
                 Value::Cls(cl) => cl,
                 other => return Err(EvalError::Runtime(format!(
-                    "runtime error: continuation is not a function: {:?}", other
+                    "continuation is not a function: {:?}", other
                 ))),
             };
             let arg_node = Rc::new(EnvNode {
@@ -104,7 +100,7 @@ fn apply_continuation(
             let closure = match whnf(k_term, k_env, budget)? {
                 Value::Cls(cl) => cl,
                 other => return Err(EvalError::Runtime(format!(
-                    "runtime error: continuation is not a function: {:?}", other
+                    "continuation is not a function: {:?}", other
                 ))),
             };
             let arg_node = Rc::new(EnvNode {
@@ -115,7 +111,7 @@ fn apply_continuation(
         }
         Value::Neu { .. } | Value::StuckApp { .. } => {
             return Err(EvalError::Runtime(
-                "runtime error: continuation arg is a stuck/neutral value".into(),
+                "continuation arg is a stuck/neutral value".into(),
             ));
         }
     };
@@ -123,13 +119,19 @@ fn apply_continuation(
     match result_val {
         Value::IOAction(a) => Ok(a),
         other => Err(EvalError::Runtime(format!(
-            "runtime error: continuation body is not an IO action: {:?}",
+            "continuation body is not an IO action: {:?}",
             other
         ))),
     }
 }
 
 /// Drive an `IOAction` tree, performing side effects.
+///
+/// `source` is borrowed (`&dyn IoSource`) because each `read_line` call is
+/// stateful but doesn't outlive the driver. `sink` is owned (`Rc<dyn IoSink>`)
+/// because the recursive `Bind` call clones it to share ownership across the
+/// inner recursion — there's no shorter-lived borrow path that satisfies
+/// the recursive ownership pattern.
 pub fn run_io(
     action: &Rc<IOAction>,
     source: &dyn IoSource,
@@ -138,8 +140,9 @@ pub fn run_io(
 ) -> Result<Value, EvalError> {
     let mut current: Rc<IOAction> = Rc::clone(action);
     loop {
-        match &*current.clone() {
-            IOAction::Pure(t, e) => return force_value(t, e, budget),
+        // Take a borrow for matching, then drop it before reassigning current.
+        let next: Option<Rc<IOAction>> = match &*current {
+            IOAction::Pure(t, e) => return whnf(t, e, budget),
             IOAction::Print(t, e) => {
                 let n = force_to_nat(t, e, budget)?;
                 sink.writeln_nat(n);
@@ -147,11 +150,11 @@ pub fn run_io(
             }
             IOAction::ReadNat => {
                 let line = source.read_line().ok_or_else(|| {
-                    EvalError::Runtime("runtime error: readNat: end of input".into())
+                    EvalError::Runtime("readNat: end of input".into())
                 })?;
                 let n: u64 = line.trim().parse().map_err(|_| {
                     EvalError::Runtime(format!(
-                        "runtime error: readNat: could not parse '{}' as Nat",
+                        "readNat: could not parse '{}' as Nat",
                         line.trim()
                     ))
                 })?;
@@ -159,9 +162,12 @@ pub fn run_io(
             }
             IOAction::Bind(inner, k_t, k_e) => {
                 let inner_val = run_io(inner, source, Rc::clone(&sink), budget)?;
-                let next = apply_continuation(k_t, k_e, inner_val, budget)?;
-                current = next;
+                let next_action = apply_continuation(k_t, k_e, inner_val, budget)?;
+                Some(next_action)
             }
+        };
+        if let Some(n) = next {
+            current = n;
         }
     }
 }

@@ -23,6 +23,6 @@ pub enum EvalError {
     #[error("reduction step limit ({0}) exceeded")]
     StepLimitExceeded(usize),
 
-    #[error("{0}")]
+    #[error("runtime error: {0}")]
     Runtime(String),
 }
