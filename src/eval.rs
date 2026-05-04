@@ -44,7 +44,7 @@ pub fn subst(target: &Expr, x: &str, value: &Expr) -> Expr {
         }
         Expr::App(e1, e2) => Expr::app(subst(e1, x, value), subst(e2, x, value)),
         Expr::Fix(inner) => Expr::fix(subst(inner, x, value)),
-        Expr::NatLit(_) | Expr::Prim(_) => target.clone(),
+        Expr::NatLit(_) | Expr::UnitLit | Expr::Prim(_) => target.clone(),
     }
 }
 
@@ -66,7 +66,7 @@ pub fn reduce_step(e: &Expr) -> Option<Expr> {
             // inside `inner` further.
             Some(Expr::app((**inner).clone(), Expr::fix((**inner).clone())))
         }
-        Expr::Var(_) | Expr::NatLit(_) | Expr::Prim(_) => None,
+        Expr::Var(_) | Expr::NatLit(_) | Expr::UnitLit | Expr::Prim(_) => None,
     }
 }
 
@@ -173,6 +173,7 @@ fn alpha_eq_with(a: &Expr, b: &Expr, env_a: &mut Vec<String>, env_b: &mut Vec<St
         }
         (Expr::Fix(a), Expr::Fix(b)) => alpha_eq_with(a, b, env_a, env_b),
         (Expr::NatLit(a), Expr::NatLit(b)) => a == b,
+        (Expr::UnitLit, Expr::UnitLit) => true,
         (Expr::Prim(a), Expr::Prim(b)) => a == b,
         _ => false,
     }
@@ -192,7 +193,7 @@ pub fn free_vars(e: &Expr) -> HashSet<String> {
             set
         }
         Expr::Fix(inner) => free_vars(inner),
-        Expr::NatLit(_) | Expr::Prim(_) => HashSet::new(),
+        Expr::NatLit(_) | Expr::UnitLit | Expr::Prim(_) => HashSet::new(),
     }
 }
 

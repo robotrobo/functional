@@ -100,6 +100,7 @@ fn print_expr(e: &Expr) -> String {
             format!("fix {}", inner_str)
         }
         Expr::NatLit(n) => n.to_string(),
+        Expr::UnitLit => "()".to_string(),
         Expr::Prim(op) => op.name().to_string(),
     }
 }
@@ -165,5 +166,10 @@ mod tests {
         // After Nat migration, `\f. \x. x` is just a function — not "0".
         let e = Expr::abs("f", Expr::abs("x", Expr::var("x")));
         assert_eq!(print(&e), "\\f. \\x. x");
+    }
+
+    #[test]
+    fn print_unit_literal() {
+        assert_eq!(print(&Expr::UnitLit), "()");
     }
 }

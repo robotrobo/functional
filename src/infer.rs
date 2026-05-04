@@ -121,6 +121,7 @@ pub fn infer_expr(env: &TypeEnv, e: &Expr, fresh: &mut Fresh) -> Result<(Subst, 
             Ok((composed, result_ty))
         }
         Expr::NatLit(_) => Ok((Subst::empty(), Type::Nat)),
+        Expr::UnitLit => Ok((Subst::empty(), Type::Unit)),
         Expr::Prim(op) => Ok((Subst::empty(), instantiate_prim(*op, fresh))),
     }
 }
@@ -401,6 +402,13 @@ mod infer_expr_tests {
         let e = Expr::fix(Expr::abs("x", Expr::abs("y", Expr::var("x"))));
         let err = infer(&e);
         assert!(err.is_err(), "expected type error, got {:?}", err);
+    }
+
+    #[test]
+    fn unit_lit_has_type_unit() {
+        let e = Expr::UnitLit;
+        let t = infer(&e).unwrap();
+        assert_eq!(t, Type::Unit);
     }
 }
 

@@ -40,6 +40,8 @@ pub enum DBExpr {
     Fix(Rc<DBExpr>),
     /// A natural number literal. Self-evaluating WHNF.
     NatLit(u64),
+    /// The unit literal `()`. Self-evaluating WHNF with no payload.
+    UnitLit,
     /// A primitive operator. Behaves like a constant function value;
     /// reduced by `cbn::whnf` when saturated with `op.arity()` arguments.
     Prim(crate::ast::PrimOp),
@@ -58,6 +60,7 @@ impl PartialEq for DBExpr {
             | (DBExpr::StrictApp(f1, x1), DBExpr::App(f2, x2)) => f1 == f2 && x1 == x2,
             (DBExpr::Fix(a), DBExpr::Fix(b)) => a == b,
             (DBExpr::NatLit(a), DBExpr::NatLit(b)) => a == b,
+            (DBExpr::UnitLit, DBExpr::UnitLit) => true,
             (DBExpr::Prim(a), DBExpr::Prim(b)) => a == b,
             _ => false,
         }
@@ -118,7 +121,7 @@ pub fn shift(d: i64, cutoff: usize, e: &DBExpr) -> DBExpr {
             DBExpr::strict_app(shift(d, cutoff, f), shift(d, cutoff, x))
         }
         DBExpr::Fix(inner) => DBExpr::fix(shift(d, cutoff, inner)),
-        DBExpr::NatLit(_) | DBExpr::Prim(_) => e.clone(),
+        DBExpr::NatLit(_) | DBExpr::UnitLit | DBExpr::Prim(_) => e.clone(),
     }
 }
 
@@ -149,7 +152,7 @@ pub fn reduce_step(e: &DBExpr) -> Option<DBExpr> {
             // fix e ↪ e (fix e). Always reducible at the head.
             Some(DBExpr::app((**inner).clone(), DBExpr::fix((**inner).clone())))
         }
-        DBExpr::Var(_) | DBExpr::NatLit(_) | DBExpr::Prim(_) => None,
+        DBExpr::Var(_) | DBExpr::NatLit(_) | DBExpr::UnitLit | DBExpr::Prim(_) => None,
     }
 }
 
@@ -173,7 +176,7 @@ pub fn subst(k: usize, s: &DBExpr, e: &DBExpr) -> DBExpr {
             DBExpr::strict_app(subst(k, s, f), subst(k, s, x))
         }
         DBExpr::Fix(inner) => DBExpr::fix(subst(k, s, inner)),
-        DBExpr::NatLit(_) | DBExpr::Prim(_) => e.clone(),
+        DBExpr::NatLit(_) | DBExpr::UnitLit | DBExpr::Prim(_) => e.clone(),
     }
 }
 
@@ -204,6 +207,7 @@ pub fn to_db(e: &Expr) -> DBExpr {
             Expr::App(f, x) => DBExpr::app(go(f, env), go(x, env)),
             Expr::Fix(inner) => DBExpr::fix(go(inner, env)),
             Expr::NatLit(n) => DBExpr::NatLit(*n),
+            Expr::UnitLit => DBExpr::UnitLit,
             Expr::Prim(op) => DBExpr::Prim(*op),
         }
     }
@@ -265,6 +269,7 @@ pub fn to_named(e: &DBExpr) -> Expr {
                     work.push(Step::Process(inner));
                 }
                 DBExpr::NatLit(n) => done.push(Expr::NatLit(*n)),
+                DBExpr::UnitLit => done.push(Expr::UnitLit),
                 DBExpr::Prim(op) => done.push(Expr::Prim(*op)),
             },
             Step::BuildAbs(name) => {

@@ -240,6 +240,23 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                     }
                 }
             }
+            DBExpr::UnitLit => {
+                // Unit is WHNF. Value::Unit is introduced in Task 3; for
+                // now surface as a StuckApp so nf round-trips it unchanged.
+                // Discard any Update frames (we can't memoize Unit yet);
+                // if args remain the program is ill-typed — surface them too.
+                let mut args: Vec<(DBExpr, Env)> = Vec::new();
+                while let Some(fr) = stack.pop() {
+                    match fr {
+                        Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
+                        Frame::Update(_) => {}
+                    }
+                }
+                return Ok(Value::StuckApp {
+                    head: DBExpr::UnitLit,
+                    args,
+                });
+            }
             DBExpr::Prim(op) => {
                 // Count how many arg frames are accessible (skipping any
                 // intervening Update frames). If fewer than arity, this is

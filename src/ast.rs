@@ -5,6 +5,7 @@ pub enum Expr {
     App(Box<Expr>, Box<Expr>),
     Fix(Box<Expr>),
     NatLit(u64),
+    UnitLit,
     Prim(PrimOp),
 }
 

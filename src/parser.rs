@@ -105,6 +105,14 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(expr.clone())
             .map(|(p, b)| Expr::abs(p, b));
 
+        // Unit literal `()` — must come BEFORE `parens` so the empty paren pair
+        // matches as Unit rather than as parens-around-empty (which fails to parse).
+        let unit_lit = just('(')
+            .then_ignore(hws())
+            .then_ignore(just(')'))
+            .then_ignore(hws())
+            .map(|_| Expr::UnitLit);
+
         let parens = just('(')
             .then_ignore(hws())
             .ignore_then(expr.clone())
@@ -162,7 +170,7 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
         ))
         .then_ignore(hws());
 
-        let atom = choice((fix_atom, let_in, lambda, parens, prim_atom, numeral, var));
+        let atom = choice((fix_atom, let_in, lambda, unit_lit, parens, prim_atom, numeral, var));
 
         atom.repeated()
             .at_least(1)
@@ -577,5 +585,18 @@ mod tests {
         let p = super::parse_program(src).unwrap();
         assert_eq!(p.defs.len(), 2);
         assert!(p.main.is_some());
+    }
+
+    #[test]
+    fn parse_unit_literal() {
+        assert_eq!(parse_expr("()").unwrap(), Expr::UnitLit);
+    }
+
+    #[test]
+    fn parse_unit_in_application() {
+        // print () — `print` will be added in Task 4; here we use a Var so the
+        // test is independent of primitive ordering.
+        let parsed = parse_expr("f ()").unwrap();
+        assert_eq!(parsed, Expr::app(Expr::var("f"), Expr::UnitLit));
     }
 }
