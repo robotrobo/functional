@@ -71,10 +71,31 @@ pub enum Thunk {
     /// Already reduced to WHNF (Unit). Memoized result of forcing a
     /// thunk whose term reduced to the unit literal `()`.
     ForcedUnit,
+    /// Already reduced to WHNF (an IOAction). Memoized result of forcing
+    /// a thunk whose term reduced to an IO operation tree.
+    ForcedIOAction(Rc<IOAction>),
     /// A "neutral" binder: a placeholder pushed during full-NF traversal.
     /// Reifies as `Var(depth - 1 - level)` instead of reducing further.
     /// Carries a name hint for the eventual reified variable.
     Bound { level: usize, name: String },
+}
+
+/// An operation tree describing an `IO a` action. Built lazily during
+/// WHNF; consumed by the runtime driver (`io_runtime::run_io`) to perform
+/// the actual side effects.
+///
+/// Args are stored as `(term, env)` thunks so they aren't forced until the
+/// runtime needs their value — this matches Haskell's lazy `return`/`>>=`.
+#[derive(Debug, Clone)]
+pub enum IOAction {
+    /// `pure x` — yield `x` when run.
+    Pure(DBExpr, Env),
+    /// `print n` — force `n` to a `Nat`, write line to stdout, yield `()`.
+    Print(DBExpr, Env),
+    /// `readNat` — read one line from stdin, parse as `Nat`, yield it.
+    ReadNat,
+    /// `bind m k` — run `m`, apply `k` to its result, then run that.
+    Bind(Rc<IOAction>, DBExpr, Env),
 }
 
 /// The WHNF of a closed lambda term: a body plus the environment it was
@@ -169,6 +190,8 @@ pub enum Value {
         head: DBExpr,
         args: Vec<(DBExpr, Env)>,
     },
+    /// An IO action awaiting execution by the runtime driver.
+    IOAction(Rc<IOAction>),
 }
 
 /// A frame on the Krivine work-stack.
@@ -272,6 +295,72 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                 }
             }
             DBExpr::Prim(op) => {
+                use crate::ast::PrimOp::*;
+                // IO primitives have a different shape: their args are not forced,
+                // they're stored as (term, env) thunks inside an IOAction. Fast-path
+                // them before the arithmetic primitive dispatch.
+                if matches!(op, Pure | Bind | Print | ReadNat) {
+                    let arity = op.arity();
+                    let arg_count = stack
+                        .iter()
+                        .rev()
+                        .filter(|f| matches!(f, Frame::Arg(..) | Frame::StrictArg(..)))
+                        .count();
+                    if arg_count < arity {
+                        // Partial application — surface as stuck.
+                        let mut args: Vec<(DBExpr, Env)> = Vec::new();
+                        while let Some(fr) = stack.pop() {
+                            match fr {
+                                Frame::Arg(t, e) | Frame::StrictArg(t, e) => args.push((t, e)),
+                                Frame::Update(_) => {}
+                            }
+                        }
+                        return Ok(Value::StuckApp {
+                            head: DBExpr::Prim(op),
+                            args,
+                        });
+                    }
+                    let mut popped: Vec<(DBExpr, Env)> = Vec::with_capacity(arity);
+                    while popped.len() < arity {
+                        match stack.pop() {
+                            Some(Frame::Arg(t, e)) | Some(Frame::StrictArg(t, e)) => {
+                                popped.push((t, e));
+                            }
+                            Some(Frame::Update(_)) => continue,
+                            None => unreachable!("counted arg_count >= arity above"),
+                        }
+                    }
+                    // Discard remaining Update frames (no in-place memoization for
+                    // IOActions on this path; if needed they're memoized via the
+                    // ForcedIOAction Var path).
+                    while let Some(Frame::Update(_)) = stack.last() {
+                        stack.pop();
+                    }
+                    let action = match op {
+                        Pure => IOAction::Pure(popped[0].0.clone(), popped[0].1.clone()),
+                        Print => IOAction::Print(popped[0].0.clone(), popped[0].1.clone()),
+                        ReadNat => IOAction::ReadNat,
+                        Bind => {
+                            let inner_v = whnf(&popped[0].0, &popped[0].1, budget)?;
+                            match inner_v {
+                                Value::IOAction(a) => {
+                                    IOAction::Bind(a, popped[1].0.clone(), popped[1].1.clone())
+                                }
+                                _ => {
+                                    return Ok(Value::StuckApp {
+                                        head: DBExpr::Prim(Bind),
+                                        args: popped,
+                                    });
+                                }
+                            }
+                        }
+                        _ => unreachable!("op was matched as IO above"),
+                    };
+                    // Drain any remaining frames (over-application).
+                    while stack.pop().is_some() {}
+                    return Ok(Value::IOAction(Rc::new(action)));
+                }
+                // Existing arithmetic-primitive code path follows unchanged below.
                 // Count how many arg frames are accessible (skipping any
                 // intervening Update frames). If fewer than arity, this is
                 // a partial application — surface as neutral.
@@ -309,7 +398,6 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         None => unreachable!("counted arg_count >= arity above"),
                     }
                 }
-                use crate::ast::PrimOp::*;
                 let result: Option<(DBExpr, Env)> = match op {
                     Succ => match try_force_nat(&popped[0].0, &popped[0].1, budget)? {
                         Some(n) => Some((DBExpr::NatLit(n.saturating_add(1)), empty_env())),
@@ -348,7 +436,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         Some(_) => Some(popped[2].clone()),
                         None => None,
                     },
-                    _ => unreachable!("Pure/Bind/Print/ReadNat handled in Task 5"),
+                    Pure | Bind | Print | ReadNat => unreachable!("handled above"),
                 };
                 match result {
                     Some((next_focus, next_env)) => {
@@ -402,6 +490,10 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                                     thunk: RefCell::new(Thunk::ForcedUnit),
                                     tail: closure.env.clone(),
                                 }),
+                                Value::IOAction(a) => Rc::new(EnvNode {
+                                    thunk: RefCell::new(Thunk::ForcedIOAction(a)),
+                                    tail: closure.env.clone(),
+                                }),
                                 Value::Neu { .. } | Value::StuckApp { .. } => {
                                     EnvNode::pending(arg_term, arg_env, closure.env.clone())
                                 }
@@ -429,6 +521,7 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                         Thunk::Forced(c) => Action::Forced(c.clone()),
                         Thunk::ForcedNat(n) => Action::ForcedNat(*n),
                         Thunk::ForcedUnit => Action::ForcedUnit,
+                        Thunk::ForcedIOAction(a) => Action::ForcedIOAction(Rc::clone(a)),
                         Thunk::Pending { term, env } => Action::Pending(term.clone(), env.clone()),
                         Thunk::Bound { level, name } => Action::Bound(*level, name.clone()),
                     }
@@ -449,6 +542,13 @@ pub fn whnf(term: &DBExpr, env: &Env, budget: &mut Budget) -> Result<Value, Eval
                     Action::ForcedUnit => {
                         focus = DBExpr::UnitLit;
                         env = empty_env();
+                    }
+                    Action::ForcedIOAction(a) => {
+                        // Discard any remaining stack frames — IOActions can't be applied
+                        // to anything (their type is `IO _`, not a function), and there's
+                        // no DBExpr representation to feed back into the loop.
+                        while stack.pop().is_some() {}
+                        return Ok(Value::IOAction(a));
                     }
                     Action::Pending(term, env_p) => {
                         budget.tick()?;
@@ -485,6 +585,7 @@ enum Action {
     Forced(Closure),
     ForcedNat(u64),
     ForcedUnit,
+    ForcedIOAction(Rc<IOAction>),
     Pending(DBExpr, Env),
     Bound(usize, String),
 }
@@ -551,6 +652,10 @@ pub fn nf(
                 Value::Unit => {
                     done.push(DBExpr::UnitLit);
                 }
+                Value::IOAction(a) => {
+                    let reified = reify_io_action(&a, depth, budget)?;
+                    done.push(reified);
+                }
                 Value::StuckApp { head, args } => {
                     let k = args.len();
                     work.push(Step::BuildStuckApp { head, k });
@@ -611,7 +716,41 @@ fn try_force_nat(
     let v = whnf(t, env, budget)?;
     match v {
         Value::Nat(n) => Ok(Some(n)),
-        Value::Neu { .. } | Value::Cls(_) | Value::StuckApp { .. } | Value::Unit => Ok(None),
+        Value::Neu { .. }
+        | Value::Cls(_)
+        | Value::StuckApp { .. }
+        | Value::Unit
+        | Value::IOAction(_) => Ok(None),
+    }
+}
+
+/// Convert an `IOAction` back to a `DBExpr` App spine, for reification by
+/// `nf`. Used only for pretty-printing IO values that leak out of `whnf`
+/// into a non-IO context.
+fn reify_io_action(
+    a: &IOAction,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<DBExpr, EvalError> {
+    use crate::ast::PrimOp::*;
+    match a {
+        IOAction::Pure(t, e) => {
+            let inner = nf(t, e, depth, budget)?;
+            Ok(DBExpr::app(DBExpr::Prim(Pure), inner))
+        }
+        IOAction::Print(t, e) => {
+            let inner = nf(t, e, depth, budget)?;
+            Ok(DBExpr::app(DBExpr::Prim(Print), inner))
+        }
+        IOAction::ReadNat => Ok(DBExpr::Prim(ReadNat)),
+        IOAction::Bind(inner_a, k_t, k_e) => {
+            let inner = reify_io_action(inner_a, depth, budget)?;
+            let kont = nf(k_t, k_e, depth, budget)?;
+            Ok(DBExpr::app(
+                DBExpr::app(DBExpr::Prim(Bind), inner),
+                kont,
+            ))
+        }
     }
 }
 
@@ -665,6 +804,7 @@ mod tests {
             Value::Nat(n) => panic!("expected closure, got Nat({})", n),
             Value::Unit => panic!("expected closure, got Unit"),
             Value::StuckApp { .. } => panic!("expected closure, got stuck application"),
+            Value::IOAction(_) => panic!("expected closure, got IOAction"),
         }
     }
 
@@ -775,5 +915,74 @@ mod tests {
 
         let is_forced = matches!(&*observer.thunk.borrow(), Thunk::Forced(_));
         assert!(is_forced, "observer still sees Pending after replacement");
+    }
+
+    #[test]
+    fn pure_one_evaluates_to_io_action() {
+        use crate::ast::PrimOp;
+        let term = DBExpr::app(DBExpr::Prim(PrimOp::Pure), DBExpr::NatLit(1));
+        let v = whnf(&term, &empty_env(), &mut budget()).unwrap();
+        match v {
+            Value::IOAction(a) => match &*a {
+                IOAction::Pure(_, _) => {}
+                other => panic!("expected Pure, got {:?}", other),
+            },
+            other => panic!("expected IOAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_nat_evaluates_to_io_action_readnat() {
+        use crate::ast::PrimOp;
+        let term = DBExpr::Prim(PrimOp::ReadNat);
+        let v = whnf(&term, &empty_env(), &mut budget()).unwrap();
+        match v {
+            Value::IOAction(a) => match &*a {
+                IOAction::ReadNat => {}
+                other => panic!("expected ReadNat, got {:?}", other),
+            },
+            other => panic!("expected IOAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn print_five_evaluates_to_io_action_print() {
+        use crate::ast::PrimOp;
+        let term = DBExpr::app(DBExpr::Prim(PrimOp::Print), DBExpr::NatLit(5));
+        let v = whnf(&term, &empty_env(), &mut budget()).unwrap();
+        match v {
+            Value::IOAction(a) => match &*a {
+                IOAction::Print(_, _) => {}
+                other => panic!("expected Print, got {:?}", other),
+            },
+            other => panic!("expected IOAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bind_read_print_evaluates_to_io_action_bind() {
+        use crate::ast::PrimOp;
+        let term = DBExpr::app(
+            DBExpr::app(DBExpr::Prim(PrimOp::Bind), DBExpr::Prim(PrimOp::ReadNat)),
+            DBExpr::Prim(PrimOp::Print),
+        );
+        let v = whnf(&term, &empty_env(), &mut budget()).unwrap();
+        match v {
+            Value::IOAction(a) => match &*a {
+                IOAction::Bind(inner, _, _) => match &**inner {
+                    IOAction::ReadNat => {}
+                    other => panic!("expected inner ReadNat, got {:?}", other),
+                },
+                other => panic!("expected Bind, got {:?}", other),
+            },
+            other => panic!("expected IOAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn building_io_actions_does_not_run_side_effects() {
+        use crate::ast::PrimOp;
+        let term = DBExpr::app(DBExpr::Prim(PrimOp::Print), DBExpr::NatLit(5));
+        let _ = whnf(&term, &empty_env(), &mut budget()).unwrap();
     }
 }
