@@ -1,7 +1,6 @@
 //! Type-level tests for the IO monad. Evaluator support comes in later
 //! tasks; this file only checks inference.
 
-use lc::ast::Expr;
 use lc::infer::{infer_expr, Fresh, TypeEnv};
 use lc::parser::parse_expr;
 use lc::types::{Scheme, Type};
