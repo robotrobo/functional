@@ -144,6 +144,11 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
                 .then_ignore(hws())
                 .then(expr.clone())
                 .map(|(p, b)| Expr::abs(p, b));
+            let inner_unit_lit = just('(')
+                .then_ignore(hws())
+                .then_ignore(just(')'))
+                .then_ignore(hws())
+                .map(|_| Expr::UnitLit);
             let inner_parens = just('(')
                 .then_ignore(hws())
                 .ignore_then(expr.clone())
@@ -153,7 +158,7 @@ fn expr_parser() -> impl Parser<char, Expr, Error = Simple<char>> {
 
             text::keyword("fix")
                 .then_ignore(hws())
-                .ignore_then(choice((inner_parens, inner_lambda, fix_atom, inner_var)))
+                .ignore_then(choice((inner_unit_lit, inner_parens, inner_lambda, fix_atom, inner_var)))
                 .map(Expr::fix)
         });
 
@@ -453,6 +458,13 @@ mod tests {
             parse_expr("fix f x").unwrap(),
             Expr::app(Expr::fix(Expr::var("f")), Expr::var("x")),
         );
+    }
+
+    #[test]
+    fn parse_fix_unit_lit() {
+        // fix () — not well-typed (Unit is not a function), but the parser
+        // must still produce the structural tree. Type errors are caught later.
+        assert_eq!(parse_expr("fix ()").unwrap(), Expr::fix(Expr::UnitLit));
     }
 
     #[test]

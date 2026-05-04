@@ -152,13 +152,13 @@ pub enum Value {
     },
     /// A natural number literal — primitive WHNF value.
     Nat(u64),
-    /// A non-function value (a primitive operator, a `NatLit`, ...) applied
-    /// to one or more arguments that the runtime cannot reduce. Two
-    /// situations produce this:
+    /// A non-function value (a primitive operator, a `NatLit`, a `UnitLit`,
+    /// ...) applied to one or more arguments that the runtime cannot reduce.
+    /// Two situations produce this:
     ///   1. A primitive whose arg(s) are stuck under a binder during
     ///      full-NF traversal (e.g. `\x. add x x`).
     ///   2. A type-incorrect program in advisory mode (e.g. `2 3` —
-    ///      applying a `NatLit` to anything).
+    ///      applying a `NatLit` or `UnitLit` to anything).
     /// Reifies as `head <arg0> <arg1> ...` in NF.
     StuckApp {
         head: DBExpr,
