@@ -81,6 +81,12 @@ fn handle_command(cmd: &str, env: &[Def], typecheck_on: &mut bool) {
 }
 
 fn evaluate(line: &str, env: &mut Vec<Def>, typecheck_on: bool) {
+    use crate::cbn::{self, Budget};
+    use crate::debruijn::to_db;
+    use crate::io_runtime::{run_io, StdinSource, StdoutSink};
+    use crate::strict::mark_strict;
+    use crate::types::Type;
+
     let parsed = match parse_program(line) {
         Ok(p) => p,
         Err(e) => {
@@ -89,10 +95,6 @@ fn evaluate(line: &str, env: &mut Vec<Def>, typecheck_on: bool) {
         }
     };
 
-    // Type-check. Build a temporary Program with the existing env + newly
-    // parsed defs and infer; print types only for the new ones and main.
-    // In strict mode, a type error blocks `def` insertion and `main`
-    // evaluation. In :typecheck off mode, errors are reported but ignored.
     let new_count = parsed.defs.len();
     let program_for_types = Program {
         defs: env.iter().cloned().chain(parsed.defs.iter().cloned()).collect(),
@@ -110,48 +112,86 @@ fn evaluate(line: &str, env: &mut Vec<Def>, typecheck_on: bool) {
             }
         }
     }
-    if let Some(t_res) = &types.main_type {
-        match t_res {
-            Ok(t) => {
-                let mut vars: Vec<_> = t.ftv().into_iter().collect();
-                vars.sort();
-                let s = crate::types::Scheme {
-                    vars,
-                    ty: t.clone(),
-                };
-                println!(": {}", s);
-            }
-            Err(e) => {
-                println!(": (type error: {})", e);
-                had_type_error = true;
-            }
+    let main_ty: Option<Type> = match &types.main_type {
+        Some(Ok(t)) => {
+            let mut vars: Vec<_> = t.ftv().into_iter().collect();
+            vars.sort();
+            let s = crate::types::Scheme {
+                vars,
+                ty: t.clone(),
+            };
+            println!(": {}", s);
+            Some(t.clone())
         }
-    }
+        Some(Err(e)) => {
+            println!(": (type error: {})", e);
+            had_type_error = true;
+            None
+        }
+        None => None,
+    };
 
     if had_type_error && typecheck_on {
-        // Strict mode: don't add ill-typed defs, don't evaluate main.
         return;
     }
 
-    // Add new defs to env.
     for d in parsed.defs {
         env.push(d);
     }
-    // Evaluate main if present.
+
     if let Some(main) = parsed.main {
         let program = Program {
             defs: env.clone(),
             main: Some(main),
         };
-        match inline_defs(&program) {
-            Ok(e) => {
-                let prepared = simplify(&e);
-                match normalize(&prepared, STEP_LIMIT) {
-                    Ok(nf) => println!("{}", print(&nf)),
-                    Err(err) => eprintln!("{}", err),
-                }
+        let inlined = match inline_defs(&program) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("{}", e);
+                return;
             }
-            Err(err) => eprintln!("{}", err),
+        };
+        let prepared = simplify(&inlined);
+
+        let main_is_io = if let Some(t) = &main_ty {
+            let mut fresh = crate::infer::Fresh::new();
+            let alpha = fresh.tvar();
+            crate::types::unify(t, &Type::IO(Box::new(alpha))).is_ok()
+        } else {
+            false
+        };
+
+        if main_is_io {
+            let db = to_db(&prepared);
+            let db = mark_strict(&db);
+            let mut budget = Budget::new(STEP_LIMIT);
+            let v = match cbn::whnf(&db, &cbn::empty_env(), &mut budget) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return;
+                }
+            };
+            let action = match v {
+                cbn::Value::IOAction(a) => a,
+                other => {
+                    eprintln!("internal error: typed as IO but evaluated to {:?}", other);
+                    return;
+                }
+            };
+            let source = StdinSource;
+            let sink: std::rc::Rc<dyn crate::io_runtime::IoSink> = std::rc::Rc::new(StdoutSink);
+            match run_io(&action, &source, sink, &mut budget) {
+                Ok(cbn::Value::Unit) => {}
+                Ok(cbn::Value::Nat(n)) => println!("{}", n),
+                Ok(other) => println!("{:?}", other),
+                Err(e) => eprintln!("{}", e),
+            }
+        } else {
+            match normalize(&prepared, STEP_LIMIT) {
+                Ok(nf) => println!("{}", print(&nf)),
+                Err(err) => eprintln!("{}", err),
+            }
         }
     }
 }

@@ -56,6 +56,12 @@ fn main() {
 }
 
 fn real_main() {
+    use lc::cbn::{self, Budget};
+    use lc::debruijn::to_db;
+    use lc::io_runtime::{run_io, StdinSource, StdoutSink};
+    use lc::strict::mark_strict;
+    use lc::types::Type;
+
     let raw: Vec<String> = env::args().collect();
     let mut no_simplify = false;
     let mut no_strict_eval = false;
@@ -64,12 +70,7 @@ fn real_main() {
     for a in raw {
         match a.as_str() {
             "--no-simplify" => no_simplify = true,
-            // Disables strictness analysis in the evaluator (forces every
-            // β-step to use a lazy thunk). Performance toggle, not a
-            // type-system toggle.
             "--no-strict" => no_strict_eval = true,
-            // Disables HM type checking. By default, ill-typed programs
-            // are rejected before evaluation.
             "--no-typecheck" => no_typecheck = true,
             _ => args.push(a),
         }
@@ -97,11 +98,6 @@ fn real_main() {
     let prelude_def_count = load_prelude().defs.len();
     let program = merge(load_prelude(), user);
 
-    // Type-check. Print user-supplied def types and main type to stderr.
-    // In strict mode (default), abort on any type error in user code.
-    // The prelude is pre-vetted; if it ever stops typechecking, that's
-    // a project bug — surface it as a runtime panic via load_prelude
-    // (the dedicated test `infer_prelude_test` is the regression gate).
     let mut had_type_error = false;
     let types = lc::infer::infer_program(&program);
     for (name, res) in types.defs.iter().skip(prelude_def_count) {
@@ -113,23 +109,24 @@ fn real_main() {
             }
         }
     }
-    if let Some(t_res) = &types.main_type {
-        match t_res {
-            Ok(t) => {
-                let mut vars: Vec<_> = t.ftv().into_iter().collect();
-                vars.sort();
-                let s = lc::types::Scheme {
-                    vars,
-                    ty: t.clone(),
-                };
-                eprintln!(": {}", s);
-            }
-            Err(e) => {
-                eprintln!(": (type error: {})", e);
-                had_type_error = true;
-            }
+    let main_ty: Option<Type> = match &types.main_type {
+        Some(Ok(t)) => {
+            let mut vars: Vec<_> = t.ftv().into_iter().collect();
+            vars.sort();
+            let s = lc::types::Scheme {
+                vars,
+                ty: t.clone(),
+            };
+            eprintln!(": {}", s);
+            Some(t.clone())
         }
-    }
+        Some(Err(e)) => {
+            eprintln!(": (type error: {})", e);
+            had_type_error = true;
+            None
+        }
+        None => None,
+    };
 
     if had_type_error && !no_typecheck {
         eprintln!("aborting: type errors above (re-run with --no-typecheck to evaluate anyway)");
@@ -137,11 +134,30 @@ fn real_main() {
     }
 
     if program.main.is_none() {
-        // Library file with only defs — print them and exit.
         for d in &program.defs {
             println!("def {} = {}", d.name, print(&d.body));
         }
         return;
+    }
+
+    let main_is_io = if let Some(t) = &main_ty {
+        let mut fresh = lc::infer::Fresh::new();
+        let alpha = fresh.tvar();
+        lc::types::unify(t, &Type::IO(Box::new(alpha))).is_ok()
+    } else {
+        false
+    };
+
+    if !no_typecheck {
+        if let Some(t) = &main_ty {
+            if !main_is_io {
+                eprintln!(
+                    "aborting: main must have type 'IO a', got '{}'",
+                    t,
+                );
+                process::exit(1);
+            }
+        }
     }
 
     let inlined = match inline_defs(&program) {
@@ -152,11 +168,46 @@ fn real_main() {
         }
     };
     let prepared = if no_simplify { inlined } else { simplify(&inlined) };
-    match normalize_with_options(&prepared, DEFAULT_STEP_LIMIT, !no_strict_eval) {
-        Ok((nf, _)) => println!("{}", print(&nf)),
-        Err(e) => {
-            eprintln!("{}", e);
-            process::exit(1);
+
+    if main_is_io {
+        let db = to_db(&prepared);
+        let db = if no_strict_eval { db } else { mark_strict(&db) };
+        let mut budget = Budget::new(DEFAULT_STEP_LIMIT);
+        let v = match cbn::whnf(&db, &cbn::empty_env(), &mut budget) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        };
+        let action = match v {
+            cbn::Value::IOAction(a) => a,
+            other => {
+                eprintln!(
+                    "internal error: main typechecked as IO but evaluated to {:?}",
+                    other,
+                );
+                process::exit(1);
+            }
+        };
+        let source = StdinSource;
+        let sink: std::rc::Rc<dyn lc::io_runtime::IoSink> = std::rc::Rc::new(StdoutSink);
+        match run_io(&action, &source, sink, &mut budget) {
+            Ok(cbn::Value::Unit) => {}
+            Ok(cbn::Value::Nat(n)) => println!("{}", n),
+            Ok(other) => println!("{:?}", other),
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        }
+    } else {
+        match normalize_with_options(&prepared, DEFAULT_STEP_LIMIT, !no_strict_eval) {
+            Ok((nf, _)) => println!("{}", print(&nf)),
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
         }
     }
 }
