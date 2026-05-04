@@ -1,2 +1,2 @@
 -- numeric literals are primitive Nat values
-fact 5
+print (fact 5)

@@ -1,4 +1,6 @@
 def id = \x. x
 def const = \x. \y. x
 
-const (id apple) banana
+-- main must have type IO a in strict mode.
+-- Print id-applied-to-7 (= 7).
+print (id 7)
